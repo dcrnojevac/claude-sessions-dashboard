@@ -133,3 +133,12 @@ function Set-ClaudeLabel([string]$SessionId, [string]$Label)
         Save-ClaudeFile $ClaudeLabelsPath (ConvertTo-Json -InputObject $labels)
     }
 }
+
+# Only the window changes a setting, so this needs no lock; the other settings are kept as they are.
+function Set-ClaudeSessionsSetting([string]$Name, $Value)
+{
+    $settings = Get-ClaudeSessionsSetting
+    $settings | Add-Member -NotePropertyName $Name -NotePropertyValue $Value -Force
+
+    Save-ClaudeFile $ClaudeSettingsPath (ConvertTo-Json -InputObject $settings)
+}

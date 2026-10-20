@@ -59,7 +59,9 @@ install until you run the installer again.
 ## The window
 
 The window lists running sessions first, most recently active on top, then pinned sessions that are not running (greyed). It
-refreshes every 10 seconds while it is not minimized. Header clicks sort; hover a title for the session's last prompt and ID.
+refreshes every 10 seconds while it is not minimized. Header clicks sort; hover a title for the session's last prompt and ID. It
+is light or dark as the Windows app mode is (Settings > Personalization > Colors) until you switch it with its own button; dark
+needs PowerShell 7.5 or later, and on 7.4 the window is always light and has no switch.
 
 | Action | How |
 | --- | --- |
@@ -71,6 +73,7 @@ refreshes every 10 seconds while it is not minimized. Header clicks sort; hover 
 | Hand over | **Hand over**, after asking. See below |
 | Restore pinned | Opens every pinned session that is not running, each in its own tab |
 | Search history | **Search history** or Ctrl+F; Esc goes back |
+| Light or dark | **Light mode** / **Dark mode**: the window closes and opens again in the other mode, which it keeps from then on |
 
 The right-click menu has the same actions. One action runs at a time, and the buttons are disabled while it does, so extra
 clicks cannot start a session twice. Launching the window while it is open brings the open one to the front. **Memory** is each
@@ -131,7 +134,7 @@ Everything the tool keeps is in `%LOCALAPPDATA%\ClaudeSessions\`:
 
 | File | Holds |
 | --- | --- |
-| `settings.json` | `reposRoot`, the folder that holds your repos, and `defaultRepo`, the name of a folder in it |
+| `settings.json` | `reposRoot`, the folder that holds your repos, and `defaultRepo`, the name of a folder in it; `colorMode`, `Light` or `Dark`, once you switch it in the window (remove it to follow Windows again) |
 | `pins.json`, `labels.json` | Your pinned sessions and session names |
 | `handovers\` | Handover documents |
 | `history\` | The search cache: the text of each session. Deleting it only makes the next search rebuild it |

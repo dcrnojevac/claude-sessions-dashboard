@@ -58,6 +58,18 @@ catch
     return
 }
 
+# Light or dark as last switched with the window's button, otherwise as the Windows app mode is. Controls take the mode when
+# they are created, so it is set here, once. .NET 8 (pwsh 7.4) has no dark mode, so there the window stays light.
+$canSwitchColorMode = [bool][System.Windows.Forms.Application].GetMethod('SetColorMode')
+
+if ($canSwitchColorMode)
+{
+    $colorMode = switch ($settings.colorMode) { 'Dark' { 'Dark' } 'Light' { 'Classic' } default { 'System' } }
+    [System.Windows.Forms.Application]::SetColorMode($colorMode)
+}
+
+$isDarkMode = [bool][System.Windows.Forms.Application]::IsDarkModeEnabled
+
 $PinnedMark = [string][char]0x2605
 $UnpinnedMark = [string][char]0x2606
 
@@ -92,6 +104,7 @@ $script:refreshJobGeneration = 0
 $script:lastUpdatedAt = $null
 $script:nextRefreshAt = [datetime]::MinValue
 $script:shownSessionIds = $null
+$script:reopenWindow = $false
 
 function Confirm-Action([string]$Message)
 {
@@ -388,6 +401,7 @@ function Update-ActionState
 
     $restoreButton.Enabled = $isLive
     $startButton.Enabled = -not $script:actionRunning
+    $colorModeButton.Enabled = $isIdle
 
     foreach ($control in @($pinButton, $pinMenuItem))
         { $control.Text = $pinText }
@@ -473,6 +487,18 @@ $startAction = {
     }
 }
 
+# The mode cannot change under open controls, so switching saves the other one and the window reopens in it once it has closed.
+# The form closes only after the action has finished with it.
+$colorModeAction = {
+    Invoke-SessionAction {
+        Set-ClaudeSessionsSetting colorMode ($isDarkMode ? 'Light' : 'Dark')
+        $script:reopenWindow = $true
+    }
+
+    if ($script:reopenWindow)
+        { $form.Close() }
+}
+
 # The Start menu shortcut uses the same icon file, so the taskbar pin and the window look alike.
 $form = [System.Windows.Forms.Form]@{
     Text = 'Claude Sessions'
@@ -492,6 +518,9 @@ $nameBox.Add_KeyDown({ if ($_.KeyCode -eq 'Enter') { $_.SuppressKeyPress = $true
 
 $searchHistoryButton = New-Button 'Search history' { if ($script:searchMode) { Exit-SearchMode } else { Enter-SearchMode } }
 $searchHistoryButton.Margin = [System.Windows.Forms.Padding]::new(40, 3, 3, 3)
+$colorModeButton = New-Button ($isDarkMode ? 'Light mode' : 'Dark mode') $colorModeAction
+$colorModeButton.Margin = [System.Windows.Forms.Padding]::new(40, 3, 3, 3)
+$colorModeButton.Visible = $canSwitchColorMode
 
 $topPanel.Controls.AddRange(@(
     [System.Windows.Forms.Label]@{ Text = 'New session in'; AutoSize = $true; Margin = $labelMargin }
@@ -500,6 +529,7 @@ $topPanel.Controls.AddRange(@(
     $nameBox
     ($startButton = New-Button 'Start' $startAction)
     $searchHistoryButton
+    $colorModeButton
 ))
 
 $searchPanel = [System.Windows.Forms.FlowLayoutPanel]@{ Dock = 'Top'; AutoSize = $true; Padding = [System.Windows.Forms.Padding]::new(8, 0, 8, 8); Visible = $false }
@@ -557,6 +587,79 @@ $grid.Columns.Add('Match', 'Match') | Out-Null
 $grid.Columns['Match'].FillWeight = 60
 $grid.Columns['Match'].SortMode = 'NotSortable'
 $grid.Columns['Match'].Visible = $false
+
+# Dark mode leaves the column headers and the star buttons drawn in the light theme, and draws the sort arrow in a grey that
+# hardly shows. So the headers are plain, without the current column's highlight, each star is drawn as a button like the
+# window's own, lighter under the mouse, and a solid arrow in the header's text color goes over the sort arrow. The selected row's
+# text is black on blue by default, so it stays white.
+if ($isDarkMode)
+{
+    $grid.DefaultCellStyle.SelectionForeColor = $grid.DefaultCellStyle.ForeColor
+    $grid.EnableHeadersVisualStyles = $false
+    $grid.ColumnHeadersDefaultCellStyle.SelectionBackColor = $grid.ColumnHeadersDefaultCellStyle.BackColor
+    $grid.ColumnHeadersDefaultCellStyle.SelectionForeColor = $grid.ColumnHeadersDefaultCellStyle.ForeColor
+    $script:hotPinRow = -1
+
+    $grid.Add_CellMouseEnter({
+        if ($_.RowIndex -ge 0 -and $_.ColumnIndex -eq $pinColumn.Index)
+        {
+            $script:hotPinRow = $_.RowIndex
+            $grid.Cursor = 'Hand'
+            $grid.InvalidateCell($_.ColumnIndex, $_.RowIndex)
+        }
+    })
+
+    $grid.Add_CellMouseLeave({
+        if ($_.RowIndex -ge 0 -and $_.ColumnIndex -eq $pinColumn.Index)
+        {
+            $script:hotPinRow = -1
+            $grid.Cursor = 'Default'
+            $grid.InvalidateCell($_.ColumnIndex, $_.RowIndex)
+        }
+    })
+
+    $grid.Add_CellPainting({
+        if ($_.RowIndex -ge 0 -and $_.ColumnIndex -eq $pinColumn.Index)
+        {
+            $_.Paint($_.CellBounds, 'Background, SelectionBackground, Border')
+            $fillShade, $borderShade = if ($_.RowIndex -eq $script:hotPinRow) { 84, 210 } else { 62, 155 }
+            $button = [System.Drawing.Rectangle]::new($_.CellBounds.X + 7, $_.CellBounds.Y + 4, $_.CellBounds.Width - 15, $_.CellBounds.Height - 10)
+            $fill = [System.Drawing.SolidBrush]::new([System.Drawing.Color]::FromArgb($fillShade, $fillShade, $fillShade))
+            $border = [System.Drawing.Pen]::new([System.Drawing.Color]::FromArgb($borderShade, $borderShade, $borderShade))
+            $corner = [System.Drawing.Size]::new(8, 8)
+            $smoothing = $_.Graphics.SmoothingMode
+            $_.Graphics.SmoothingMode = 'AntiAlias'
+            $_.Graphics.FillRoundedRectangle($fill, $button, $corner)
+            $_.Graphics.DrawRoundedRectangle($border, $button, $corner)
+            $_.Graphics.SmoothingMode = $smoothing
+            $fill.Dispose()
+            $border.Dispose()
+            [System.Windows.Forms.TextRenderer]::DrawText($_.Graphics, $_.FormattedValue, $_.CellStyle.Font, $button, $_.CellStyle.ForeColor, 'HorizontalCenter, VerticalCenter')
+            $_.Handled = $true
+            return
+        }
+
+        $direction = if ($_.RowIndex -eq -1 -and $_.ColumnIndex -ge 0) { $grid.Columns[$_.ColumnIndex].HeaderCell.SortGlyphDirection }
+
+        if ($direction -notin 'Ascending', 'Descending')
+            { return }
+
+        $_.Paint($_.CellBounds, 'All')
+        $scale = $_.Graphics.DpiX / 96
+        $x = $_.CellBounds.Right - 10.5 * $scale
+        $y = $_.CellBounds.Top + $_.CellBounds.Height / 2
+        $tip = if ($direction -eq 'Descending') { 4 * $scale } else { -4 * $scale }
+        $brush = [System.Drawing.SolidBrush]::new($_.CellStyle.ForeColor)
+        $arrow = [System.Drawing.PointF[]]@(
+            [System.Drawing.PointF]::new($x - 4.5 * $scale, $y - $tip)
+            [System.Drawing.PointF]::new($x + 4.5 * $scale, $y - $tip)
+            [System.Drawing.PointF]::new($x, $y + $tip)
+        )
+        $_.Graphics.FillPolygon($brush, $arrow)
+        $brush.Dispose()
+        $_.Handled = $true
+    })
+}
 
 $openMenuItem = New-MenuItem 'Open' $openAction
 $renameMenuItem = New-MenuItem 'Rename' $renameAction
@@ -740,3 +843,16 @@ $form.Add_FormClosed({
 Update-ActionState
 $timer.Start()
 [System.Windows.Forms.Application]::Run($form)
+
+# The instance mutex goes first: while it exists the new window would only bring this closing one to the front, and exit. Started
+# hidden, the new window would not show either, so it starts without a console window instead.
+if ($script:reopenWindow)
+{
+    $instanceMutex.Dispose()
+    $startInfo = [System.Diagnostics.ProcessStartInfo]@{ FileName = [Environment]::ProcessPath; CreateNoWindow = $true }
+
+    foreach ($argument in '-NoProfile', '-STA', '-File', $PSCommandPath)
+        { $startInfo.ArgumentList.Add($argument) }
+
+    [System.Diagnostics.Process]::Start($startInfo) | Out-Null
+}
