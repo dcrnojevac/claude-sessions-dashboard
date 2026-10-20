@@ -4,6 +4,8 @@ Small utility for overseeing Claude Code sessions: a window and a set of `cc*` P
 its title, branch, last activity, context size and memory, start sessions in a repo, rename them, search what was said in past
 sessions, hand a long session over to a fresh one, and pin the ones you want back after a reboot.
 
+![The Claude Sessions window listing running and pinned sessions](Docs/screenshot.png)
+
 ## Requirements
 
 - Windows, PowerShell 7.4 or later (`pwsh`), Windows Terminal
@@ -41,6 +43,8 @@ matched from the start of a word (`part` finds partition, `notifier` finds EtlRu
 goes back to the live list, and so does opening a result. Open is the only action on results; pin, rename, stop and hand over
 work from the live list. Claude Code deletes transcripts after `cleanupPeriodDays` (30 by default, in `~/.claude/settings.json`),
 so search only reaches back that far; raise it if you want more.
+
+![History search for "timeout", listing three sessions with the matching text](Docs/screenshot-search.png)
 
 **Hand over** (button, right-click, or `cchandover <title|#>`) continues an idle session in a fresh one. After asking, it stops
 the session, has it write a handover document in one more turn, saves it to `%LOCALAPPDATA%\ClaudeSessions\handovers\`, then
@@ -99,6 +103,9 @@ Invoke-Pester ./Tests
 
 They never touch your sessions, pins or labels: Claude Code, processes and tabs are mocked, pins and labels go to Pester's
 temporary drive, and the runner tests start `pwsh` in place of `claude`.
+
+The screenshots come from `Docs/New-Screenshot.ps1`, which runs the window against made-up sessions in a temporary folder (close
+your own window first), and the icon from `Docs/New-Icon.ps1`.
 
 ## Removing it
 
