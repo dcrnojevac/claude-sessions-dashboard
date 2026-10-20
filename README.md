@@ -203,4 +203,4 @@ Start menu shortcut, and remove the `Import-Module ClaudeSessions` line from you
 
 ## License
 
-[MIT](LICENSE)
+[MIT](LICENSE). This project is not affiliated with or endorsed by Anthropic; Claude and Claude Code are Anthropic's trademarks.
