@@ -17,6 +17,37 @@ $ParentSessionVariables = @(
     'CLAUDE_PID'
 )
 
+Add-Type -Namespace ClaudeSessions -Name TerminalWindow -UsingNamespace System.Text -MemberDefinition @'
+delegate bool WindowVisitor(IntPtr window, IntPtr data);
+[DllImport("user32.dll")] static extern bool EnumWindows(WindowVisitor visitor, IntPtr data);
+[DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClassName(IntPtr window, StringBuilder className, int size);
+[DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr window);
+[DllImport("user32.dll")] static extern bool IsIconic(IntPtr window);
+[DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr window);
+
+// Windows are enumerated front to back, so the first match is the terminal window nearest the front.
+public static void BringToFront()
+{
+    IntPtr frontTerminal = IntPtr.Zero;
+    StringBuilder className = new StringBuilder(64);
+
+    EnumWindows((window, data) =>
+    {
+        className.Length = 0;
+        GetClassName(window, className, className.Capacity);
+
+        if (className.ToString() != "CASCADIA_HOSTING_WINDOW_CLASS" || !IsWindowVisible(window) || IsIconic(window))
+            return true;
+
+        frontTerminal = window;
+        return false;
+    }, IntPtr.Zero);
+
+    if (frontTerminal != IntPtr.Zero)
+        SetForegroundWindow(frontTerminal);
+}
+'@
+
 # Stopping, restoring and handing over act on these fields. Without them the tool would be guessing, and a missing sessionId, say,
 # would make every pin look stopped and Restore open duplicates.
 function Assert-ClaudeSessionEntry($Entry)
@@ -297,6 +328,10 @@ function Open-ClaudeTab([string]$Title, [string]$Path, [string]$ClaudeCommand)
 
     $arguments = "-w 0 new-tab --title `"$tabTitle`" -d `"$tabPath`" pwsh -NoLogo -EncodedCommand $encodedCommand"
 
+    # Windows Terminal brings an open window forward by attaching to the input of the window in front and activating its own,
+    # without SetForegroundWindow; when that is the sessions window, the taskbar can no longer bring it back. Already in front,
+    # the terminal window has nothing to attach to.
+    [ClaudeSessions.TerminalWindow]::BringToFront()
     Start-Process wt.exe -ArgumentList $arguments
 }
 
