@@ -60,6 +60,13 @@ Describe 'Stop-ClaudeSession' {
         Should -Invoke Stop-Process -ModuleName ClaudeSessions -Times 1 -Exactly
     }
 
+    It 'stops a claude process that an update renamed while it ran' {
+        Mock Get-Process -ModuleName ClaudeSessions { [pscustomobject]@{ ProcessName = 'claude.exe.old.1792708469164.19484'; StartTime = $startedAt } }
+        Set-AgentsOutput (Get-InteractiveEntry 'idle')
+        Stop-ClaudeSession $runningSession
+        Should -Invoke Stop-Process -ModuleName ClaudeSessions -Times 1 -Exactly
+    }
+
     It 'stops nothing when the status is unknown' {
         Set-AgentsOutput (Get-InteractiveEntry 'waiting')
         { Stop-ClaudeSession $runningSession } | Should -Throw "*status 'waiting'*"

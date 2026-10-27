@@ -4,6 +4,10 @@
 $ClaudeCommandTimeout = [TimeSpan]::FromSeconds(20)
 $RecentlyResumed = @{}
 
+# An update renames the executable of a claude still running to claude.exe.old.<timestamp>.<pid>. Looked up by id, the process
+# then goes by that name; listed with the others, it is still claude.
+$ClaudeProcessNamePattern = '^claude(\.exe\.old\.[\d.]+)?$'
+
 # A shell inside a Claude session has these set, and a claude started with them runs as that session's nested child: it replies
 # normally but writes no transcript and never shows in claude agents. Your own CLAUDE_CODE_* settings are left alone.
 $ParentSessionVariables = @(
@@ -449,7 +453,7 @@ function Stop-ClaudeSession($Session, [switch]$Force)
         $process = Get-Process -Id $runningSession.pid -ErrorAction SilentlyContinue
         $startedAt = [DateTimeOffset]::FromUnixTimeMilliseconds($runningSession.startedAt).LocalDateTime
 
-        if (-not $process -or $process.ProcessName -ne 'claude' -or [Math]::Abs(($process.StartTime - $startedAt).TotalSeconds) -gt 10)
+        if (-not $process -or $process.ProcessName -notmatch $ClaudeProcessNamePattern -or [Math]::Abs(($process.StartTime - $startedAt).TotalSeconds) -gt 10)
             { throw "pid $($runningSession.pid) is not the claude process Claude lists for $($Session.title); nothing was stopped." }
 
         Stop-Process -InputObject $process
