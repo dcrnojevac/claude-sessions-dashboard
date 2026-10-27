@@ -933,7 +933,7 @@ $colorModeAction = {
 $form = [System.Windows.Forms.Form]@{
     Text = 'Claude Sessions'
     Icon = [System.Drawing.Icon]::new((Join-Path $PSScriptRoot 'ClaudeSessions.ico'))
-    Size = [System.Drawing.Size]::new(1250, 520)
+    Size = [System.Drawing.Size]::new(1400, 800)
     StartPosition = 'CenterScreen'
     Font = [System.Drawing.Font]::new('Segoe UI', 10)
 }
