@@ -15,6 +15,8 @@ Add-Type -AssemblyName System.Drawing, UIAutomationClient, UIAutomationTypes
 Add-Type -Namespace ClaudeSessionsScreenshot -Name Native -MemberDefinition @'
 [StructLayout(LayoutKind.Sequential)] public struct Rect { public int Left; public int Top; public int Right; public int Bottom; }
 [DllImport("user32.dll")] public static extern bool SetProcessDpiAwarenessContext(IntPtr context);
+[DllImport("user32.dll")] public static extern IntPtr SetThreadDpiAwarenessContext(IntPtr context);
+[DllImport("user32.dll")] public static extern IntPtr GetWindowDpiAwarenessContext(IntPtr window);
 [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr window, out Rect rect);
 [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr window, IntPtr deviceContext, uint flags);
 [DllImport("dwmapi.dll")] public static extern int DwmGetWindowAttribute(IntPtr window, int attribute, out Rect rect, int size);
@@ -117,15 +119,24 @@ function Write-Transcript($Session, [string]$SessionId, [string]$Cwd)
     (Get-Item -LiteralPath $transcriptPath).LastWriteTime = (Get-Date).AddMinutes(-$Session.MinutesAgo)
 }
 
-# Draws the window into a bitmap, cropped to its visible frame; PrintWindow works even while other windows cover it.
+# Draws the window into a bitmap, cropped to its visible frame; PrintWindow works even while other windows cover it. The window
+# is not DPI aware, so PrintWindow draws it at its own size, unscaled, while the frame bounds come back in real pixels; the crop
+# is scaled from those to the window's own size, measured with the window's DPI awareness.
 function Save-WindowImage([IntPtr]$Window, [string]$Path)
 {
     $windowRect = [ClaudeSessionsScreenshot.Native+Rect]::new()
+    $ownWindowRect = [ClaudeSessionsScreenshot.Native+Rect]::new()
     $frameRect = [ClaudeSessionsScreenshot.Native+Rect]::new()
     [ClaudeSessionsScreenshot.Native]::GetWindowRect($Window, [ref]$windowRect) | Out-Null
     [ClaudeSessionsScreenshot.Native]::DwmGetWindowAttribute($Window, 9, [ref]$frameRect, 16) | Out-Null
 
-    $fullImage = [System.Drawing.Bitmap]::new($windowRect.Right - $windowRect.Left, $windowRect.Bottom - $windowRect.Top)
+    $previousContext = [ClaudeSessionsScreenshot.Native]::SetThreadDpiAwarenessContext([ClaudeSessionsScreenshot.Native]::GetWindowDpiAwarenessContext($Window))
+    [ClaudeSessionsScreenshot.Native]::GetWindowRect($Window, [ref]$ownWindowRect) | Out-Null
+    [ClaudeSessionsScreenshot.Native]::SetThreadDpiAwarenessContext($previousContext) | Out-Null
+
+    $ownWidth = $ownWindowRect.Right - $ownWindowRect.Left
+    $scale = ($windowRect.Right - $windowRect.Left) / $ownWidth
+    $fullImage = [System.Drawing.Bitmap]::new($ownWidth, $ownWindowRect.Bottom - $ownWindowRect.Top)
     $graphics = [System.Drawing.Graphics]::FromImage($fullImage)
     $deviceContext = $graphics.GetHdc()
     [ClaudeSessionsScreenshot.Native]::PrintWindow($Window, $deviceContext, 2) | Out-Null
@@ -133,11 +144,14 @@ function Save-WindowImage([IntPtr]$Window, [string]$Path)
     $graphics.Dispose()
 
     $frame = [System.Drawing.Rectangle]::new(
-        $frameRect.Left - $windowRect.Left,
-        $frameRect.Top - $windowRect.Top,
-        $frameRect.Right - $frameRect.Left,
-        $frameRect.Bottom - $frameRect.Top
+        [int](($frameRect.Left - $windowRect.Left) / $scale),
+        [int](($frameRect.Top - $windowRect.Top) / $scale),
+        [int](($frameRect.Right - $frameRect.Left) / $scale),
+        [int](($frameRect.Bottom - $frameRect.Top) / $scale)
     )
+
+    # Rounding can put the scaled frame a pixel past the drawing.
+    $frame = [System.Drawing.Rectangle]::Intersect($frame, [System.Drawing.Rectangle]::new(0, 0, $fullImage.Width, $fullImage.Height))
     $image = $fullImage.Clone($frame, $fullImage.PixelFormat)
     $image.Save($Path, [System.Drawing.Imaging.ImageFormat]::Png)
     $image.Dispose()
