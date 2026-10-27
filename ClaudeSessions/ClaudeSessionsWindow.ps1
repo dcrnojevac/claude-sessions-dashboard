@@ -72,6 +72,8 @@ $isDarkMode = [bool][System.Windows.Forms.Application]::IsDarkModeEnabled
 
 $PinnedMark = [string][char]0x2605
 $UnpinnedMark = [string][char]0x2606
+$LightModeMark = [string][char]0x2600
+$DarkModeMark = [string][char]0x263E
 
 # Header clicks sort on these values rather than the displayed text, which would put '17 min ago' before '2 min ago'.
 $SortKeys = @{
@@ -105,6 +107,27 @@ $script:lastUpdatedAt = $null
 $script:nextRefreshAt = [datetime]::MinValue
 $script:shownSessionIds = $null
 $script:reopenWindow = $false
+
+# The tracker is optional: without TRACKER.md in its folder the window has no Tracker button and works as it always has.
+$TrackerPath = Get-ClaudeTrackerPath $settings
+$TrackerDocsUrl = 'https://github.com/dcrnojevac/claude-sessions-dashboard#optional-task-tracker'
+$AfterStateColors = @{ waiting = [System.Drawing.Color]::DarkOrange; unknown = [System.Drawing.Color]::IndianRed; unblocked = [System.Drawing.Color]::MediumSeaGreen }
+$AfterStateNotes = @{
+    blocked = 'Waits on an open item.'
+    unknown = 'Names an id that is neither in the tracker nor in the archive.'
+    waiting = 'Waits on an outside event.'
+    unblocked = 'Everything it waited on is archived, so it can start.'
+}
+
+$script:trackerMode = $false
+$script:trackerIsSetUp = $false
+$script:trackerItemsById = @{}
+$script:trackerOpenIds = [System.Collections.Generic.HashSet[string]]::new()
+$script:trackerWaitingItems = @{}
+$script:showArchive = $false
+$script:trackerFilesStamp = $null
+$script:nextTrackerCheckAt = [datetime]::MinValue
+$script:trackerSplittersPlaced = $false
 
 function Confirm-Action([string]$Message)
 {
@@ -166,6 +189,9 @@ function Invoke-SessionAction([scriptblock]$Action, [switch]$AllowDuringHandover
 # Searching is a mode of its own: the live list and its refresh pause until Esc or the button, which then reads "Back to live list".
 function Enter-SearchMode
 {
+    if ($script:trackerMode)
+        { Exit-TrackerMode }
+
     if (-not $script:searchMode)
     {
         $script:searchMode = $true
@@ -379,6 +405,374 @@ function Show-Session([object[]]$Sessions)
     Update-ActionState
 }
 
+# The tracker is a mode of its own like search: the live list and its refresh pause until Esc or the button. Its archive is a
+# level below, which Esc or Back to tracker leaves.
+function Enter-TrackerMode
+{
+    if ($script:searchMode)
+        { Exit-SearchMode }
+
+    $script:trackerMode = $true
+    $script:refreshGeneration++
+    Show-Tracker
+
+    # A splitter can only be placed once its container has its real size.
+    if (-not $script:trackerSplittersPlaced -and $trackerSplit.Visible)
+    {
+        $trackerSplit.SplitterDistance = [int]($trackerSplit.Width * 0.55)
+        $trackerSidePanel.SplitterDistance = [int]($trackerSidePanel.Height * 0.55)
+        $script:trackerSplittersPlaced = $true
+    }
+
+    $trackerGrid.Focus() | Out-Null
+}
+
+function Exit-TrackerMode
+{
+    $script:trackerMode = $false
+    $script:showArchive = $false
+    $script:nextRefreshAt = [datetime]::MinValue
+    Set-TrackerVisibility
+    $statusLabel.Text = $script:liveStatus
+}
+
+function Get-SelectedTrackerItem
+{
+    if ($trackerGrid.SelectedRows.Count -gt 0 -and $trackerGrid.SelectedRows[0].Tag -isnot [string])
+        { $trackerGrid.SelectedRows[0].Tag }
+}
+
+# Changes to the index, the archive or a details file, checked by name, size and write time.
+function Get-TrackerFilesStamp
+{
+    $files = Get-ChildItem -LiteralPath $TrackerPath, (Join-Path $TrackerPath 'items') -File -ErrorAction SilentlyContinue
+
+    @($files | ForEach-Object { "$($_.FullName)|$($_.Length)|$($_.LastWriteTimeUtc.Ticks)" }) -join ';'
+}
+
+function Format-TrackerAfter($Item)
+{
+    $links = foreach ($link in $Item.after)
+    {
+        switch ($link.state)
+        {
+            'open' { "[$($link.id)]" }
+            'archived' { "[$($link.id)] done" }
+            'missing' { "[$($link.id)] not found" }
+            default { $link.event }
+        }
+    }
+
+    $links -join ', '
+}
+
+# Picks the item in the list, switching between the open items and the archive when it is in the other one.
+function Select-TrackerItem([string]$Id)
+{
+    if (-not $script:trackerItemsById.Contains($Id))
+        { return }
+
+    $isArchived = -not $script:trackerOpenIds.Contains($Id)
+
+    if ($isArchived -ne $script:showArchive)
+        { Show-TrackerArchive $isArchived }
+
+    foreach ($row in $trackerGrid.Rows)
+    {
+        if ($row.Tag -isnot [string] -and $row.Tag.id -eq $Id)
+        {
+            $trackerGrid.CurrentCell = $row.Cells['Title']
+            break
+        }
+    }
+}
+
+function Show-TrackerArchive([bool]$ShowArchive)
+{
+    $script:showArchive = $ShowArchive
+    Show-Tracker
+}
+
+function Open-SelectedTrackerDetails
+{
+    $item = Get-SelectedTrackerItem
+
+    if ($item.detailsPath)
+        { Invoke-SessionAction -AllowDuringHandover { Invoke-Item -LiteralPath $item.detailsPath } }
+}
+
+function Set-TrackerRow($Row, $Item)
+{
+    $Row.Tag = $Item
+
+    if (-not $Item.id)
+    {
+        $Row.Cells['Id'].Value = '(as written)'
+        $Row.Cells['Title'].Value = $Item.raw
+        $Row.Cells['Title'].ToolTipText = 'This line is not in the tracker format, so it is shown as written.'
+        $Row.DefaultCellStyle.ForeColor = [System.Drawing.SystemColors]::GrayText
+        return
+    }
+
+    $values = [ordered]@{
+        Id = $Item.id
+        Title = $Item.title
+        Latest = $Item.latestStamp.text
+        InState = Format-ClaudeDaysSince $Item.latestStamp.date
+        After = Format-TrackerAfter $Item
+        Outcome = $Item.outcome
+    }
+
+    foreach ($column in $values.Keys)
+        { $Row.Cells[$column].Value = $values[$column] }
+
+    $Row.Cells['Title'].ToolTipText = $Item.raw
+
+    if ($Item.afterState)
+    {
+        $Row.Cells['After'].ToolTipText = $AfterStateNotes[$Item.afterState]
+        $Row.Cells['After'].Style.ForeColor = $AfterStateColors[$Item.afterState] ?? [System.Drawing.Color]::Empty
+    }
+}
+
+# Read on entering the tracker and again whenever one of its files changes; the files are small, so the rows are simply rebuilt.
+# Items stay in file order under a heading row per section; the archive shows newest first.
+function Show-Tracker
+{
+    $script:trackerFilesStamp = Get-TrackerFilesStamp
+
+    try
+    {
+        $tracker = Get-ClaudeTracker $TrackerPath
+    }
+    catch
+    {
+        $statusLabel.Text = "Could not read the tracker: $($_.Exception.Message)"
+        return
+    }
+
+    $script:trackerIsSetUp = $tracker.isSetUp
+    Set-TrackerVisibility
+
+    foreach ($column in 'InState', 'After')
+        { $trackerGrid.Columns[$column].Visible = -not $script:showArchive }
+
+    $trackerGrid.Columns['Outcome'].Visible = $script:showArchive
+
+    if (-not $tracker.isSetUp)
+    {
+        $statusLabel.Text = ''
+        return
+    }
+
+    # The Dependencies pane follows the selection, so it looks items up here instead of in the rows: by id (an open item before an
+    # archived one of the same id), and by the id each open item waits on.
+    $script:trackerItemsById = @{}
+    $script:trackerOpenIds = [System.Collections.Generic.HashSet[string]]::new()
+    $script:trackerWaitingItems = @{}
+
+    foreach ($item in @($tracker.items) + @($tracker.archivedItems) | Where-Object id)
+        { $script:trackerItemsById[$item.id] ??= $item }
+
+    foreach ($item in $tracker.items | Where-Object id)
+    {
+        $script:trackerOpenIds.Add($item.id) | Out-Null
+
+        foreach ($link in $item.after | Where-Object id)
+        {
+            $script:trackerWaitingItems[$link.id] ??= [System.Collections.Generic.List[object]]::new()
+            $script:trackerWaitingItems[$link.id].Add($item)
+        }
+    }
+
+    $shownItems = @(if ($script:showArchive) { $tracker.archivedItems } else { $tracker.items })
+    $selectedId = (Get-SelectedTrackerItem).id
+    $selectedRow = $null
+    $headingRow = $null
+    $trackerGrid.Rows.Clear()
+
+    if ($script:showArchive)
+        { [array]::Reverse($shownItems) }
+
+    foreach ($item in $shownItems)
+    {
+        $section = $item.section ?? 'No section'
+
+        if (-not $headingRow -or $section -ne $headingSection)
+        {
+            $headingSection = $section
+            $headingRow = $trackerGrid.Rows[$trackerGrid.Rows.Add()]
+            $headingRow.DefaultCellStyle.BackColor = [System.Drawing.SystemColors]::Control
+            $sectionCount = 0
+        }
+
+        $row = $trackerGrid.Rows[$trackerGrid.Rows.Add()]
+        Set-TrackerRow $row $item
+        $sectionCount++
+        $headingRow.Tag = "$section  ($sectionCount)"
+
+        if (-not $selectedRow -or ($item.id -and $item.id -eq $selectedId))
+            { $selectedRow = $row }
+    }
+
+    if ($selectedRow)
+        { $trackerGrid.CurrentCell = $selectedRow.Cells['Title'] }
+
+    Show-TrackerItemDetails
+
+    $openCount = @($tracker.items | Where-Object id).Count
+    $rawCount = @($tracker.items + $tracker.archivedItems | Where-Object { -not $_.id }).Count
+    $rawNote = if ($rawCount) { " · $rawCount lines not in the tracker format" }
+    $statusLabel.Text = "$openCount open · $($tracker.archivedItems.Count) archived$rawNote · read $((Get-Date).ToString('HH:mm:ss'))"
+}
+
+function Show-TrackerItemDetails
+{
+    $item = Get-SelectedTrackerItem
+    $details = $null
+
+    if ($item.detailsPath)
+    {
+        try
+        {
+            $details = Read-ClaudeTrackerDetails $item.detailsPath
+        }
+        catch
+        {
+            $details = "Could not read $($item.detailsPath): $($_.Exception.Message)"
+        }
+    }
+    elseif ($item.detailsLink)
+    {
+        $details = "$($item.detailsLink) is linked but does not exist."
+    }
+
+    $daysInState = Format-ClaudeDaysSince $item.latestStamp.date
+    $latest = if ($daysInState -and -not $script:showArchive) { "$($item.latestStamp.text), $daysInState" } else { $item.latestStamp.text }
+
+    $trackerTitleLabel.Text = if ($item.id) { $item.title } elseif ($item) { 'A line not in the tracker format' } else { 'No item selected' }
+    $trackerSubtitleLabel.Text = @($item.id, $item.section, $latest | Where-Object { $_ }) -join '  ·  '
+    $trackerDetailsBox.Text = if ($item) { ("$($item.raw)`n`n$details" -replace '\r?\n', "`r`n").TrimEnd() } else { '' }
+    Set-TrackerTitleHeight
+    Show-TrackerTree $item
+    Update-ActionState
+}
+
+# The title wraps, so its label is as tall as the wrapped text at the pane's current width.
+function Set-TrackerTitleHeight
+{
+    $textSize = [System.Drawing.Size]::new([Math]::Max(1, $trackerTitleLabel.ClientSize.Width), [int]::MaxValue)
+    $textHeight = [System.Windows.Forms.TextRenderer]::MeasureText($trackerTitleLabel.Text, $trackerTitleLabel.Font, $textSize, 'WordBreak').Height
+
+    $trackerTitleLabel.Height = $textHeight + $trackerTitleLabel.Padding.Vertical
+}
+
+# The selected item's dependencies both ways: what it waits on, and what those wait on in turn, then the items waiting on it, and
+# what waits on those. A link that comes back to an item already on its path stops there.
+function Show-TrackerTree($Item)
+{
+    $trackerTree.BeginUpdate()
+    $trackerTree.Nodes.Clear()
+
+    if ($Item.id)
+    {
+        $waitsOnNode = [System.Windows.Forms.TreeNode]@{ Text = 'Waits on'; ForeColor = [System.Drawing.SystemColors]::GrayText }
+        $waitingLabel = if ($script:trackerOpenIds.Contains($Item.id)) { 'Waiting on it' } else { 'Unblocked by it' }
+        $waitingNode = [System.Windows.Forms.TreeNode]@{ Text = $waitingLabel; ForeColor = [System.Drawing.SystemColors]::GrayText }
+
+        Add-TrackerWaitsOnNodes $waitsOnNode $Item @($Item.id)
+        Add-TrackerWaitingNodes $waitingNode $Item.id @($Item.id)
+
+        foreach ($groupNode in @($waitsOnNode, $waitingNode) | Where-Object { $_.Nodes.Count -gt 0 })
+            { $trackerTree.Nodes.Add($groupNode) | Out-Null }
+    }
+
+    if ($trackerTree.Nodes.Count -eq 0)
+    {
+        $emptyText = if ($Item.id) { 'This item has no dependencies.' } else { 'Select an item to see its dependencies.' }
+        $trackerTree.Nodes.Add([System.Windows.Forms.TreeNode]@{ Text = $emptyText; ForeColor = [System.Drawing.SystemColors]::GrayText }) | Out-Null
+    }
+
+    $trackerTree.ExpandAll()
+    $trackerTree.EndUpdate()
+}
+
+function Add-TrackerWaitsOnNodes($Node, $Item, [string[]]$PathIds)
+{
+    foreach ($link in $Item.after)
+    {
+        $linkedItem = if ($link.id) { $script:trackerItemsById[$link.id] }
+
+        $child = switch ($link.state)
+        {
+            { $_ -in 'open', 'archived' } { New-TrackerNode $linkedItem }
+            'missing' { [System.Windows.Forms.TreeNode]@{ Text = "[$($link.id)] not in the tracker or the archive"; ForeColor = $AfterStateColors.unknown } }
+            default { [System.Windows.Forms.TreeNode]@{ Text = "Outside event: $($link.event)"; ForeColor = $AfterStateColors.waiting } }
+        }
+
+        $Node.Nodes.Add($child) | Out-Null
+
+        if ($link.state -ne 'open')
+            { continue }
+
+        if ($link.id -in $PathIds)
+            { $child.Text += '  (loops back)' }
+        else
+            { Add-TrackerWaitsOnNodes $child $linkedItem ($PathIds + $link.id) }
+    }
+}
+
+function Add-TrackerWaitingNodes($Node, [string]$Id, [string[]]$PathIds)
+{
+    foreach ($waitingItem in $script:trackerWaitingItems[$Id])
+    {
+        $child = New-TrackerNode $waitingItem
+        $Node.Nodes.Add($child) | Out-Null
+
+        if ($waitingItem.id -in $PathIds)
+            { $child.Text += '  (loops back)' }
+        else
+            { Add-TrackerWaitingNodes $child $waitingItem.id ($PathIds + $waitingItem.id) }
+    }
+}
+
+# An archived item is green: it is done, so what waits on it can start.
+function New-TrackerNode($Item)
+{
+    $isArchived = -not $script:trackerOpenIds.Contains($Item.id)
+    $section = if ($isArchived) { 'done' } else { $Item.section }
+    $color = if ($isArchived) { $AfterStateColors.unblocked } else { [System.Drawing.Color]::Empty }
+
+    [System.Windows.Forms.TreeNode]@{ Text = "[$($Item.id)] $($Item.title)  ·  $section"; Tag = $Item; ToolTipText = $Item.raw; ForeColor = $color }
+}
+
+# Navigation is in the top bar: the live list's Search history and Tracker, the tracker's Archive and Back to live list, and in
+# the archive only Back to tracker. The bottom bar holds the actions on the selected row.
+function Set-TrackerVisibility
+{
+    $isTracker = $script:trackerMode
+    $isArchive = $isTracker -and $script:showArchive
+    $hasItems = $isTracker -and $script:trackerIsSetUp
+
+    $modeHeader.Text = if ($isArchive) { 'Tracker archive' } elseif ($isTracker) { 'Tracker' } else { 'Live sessions' }
+    $trackerButton.Text = if ($isTracker) { 'Back to live list' } else { 'Tracker' }
+    $grid.Visible = -not $isTracker
+    $trackerSplit.Visible = $hasItems
+    $trackerMissingLabel.Visible = $isTracker -and -not $script:trackerIsSetUp
+    $searchHistoryButton.Visible = -not $isArchive
+    $archiveButton.Visible = $hasItems -and -not $isArchive
+    $backToTrackerButton.Visible = $isArchive
+    $openDetailsButton.Visible = $hasItems
+
+    if ($isTracker)
+        { $trackerButton.Visible = -not $isArchive }
+
+    foreach ($control in @($openButton, $renameButton, $pinButton, $stopButton, $handoverButton, $restoreButton))
+        { $control.Visible = -not $isTracker }
+
+    Update-ActionState
+}
+
 # Search results are only for finding a session and opening it; everything else acts on the live list.
 function Update-ActionState
 {
@@ -402,6 +796,8 @@ function Update-ActionState
     $restoreButton.Enabled = $isLive
     $startButton.Enabled = -not $script:actionRunning
     $colorModeButton.Enabled = $isIdle
+    $trackerButton.Enabled = -not $script:actionRunning
+    $openDetailsButton.Enabled = -not $script:actionRunning -and (Get-SelectedTrackerItem).detailsPath
 
     foreach ($control in @($pinButton, $pinMenuItem))
         { $control.Text = $pinText }
@@ -413,6 +809,40 @@ function New-Button([string]$Text, [scriptblock]$OnClick)
     $button.Add_Click($OnClick)
 
     $button
+}
+
+# The session list and the tracker list. Dark mode leaves the column headers drawn in the light theme, so there they are plain,
+# without the current column's highlight, and the selected row's text, black on blue by default, stays white.
+function New-Grid
+{
+    $newGrid = [System.Windows.Forms.DataGridView]@{
+        Dock = 'Fill'
+        ReadOnly = $true
+        AllowUserToAddRows = $false
+        AllowUserToDeleteRows = $false
+        AllowUserToResizeRows = $false
+        SelectionMode = 'FullRowSelect'
+        MultiSelect = $false
+        RowHeadersVisible = $false
+        AutoSizeColumnsMode = 'Fill'
+        BorderStyle = 'None'
+        CellBorderStyle = 'SingleHorizontal'
+        BackgroundColor = [System.Drawing.SystemColors]::Window
+        RowTemplate = [System.Windows.Forms.DataGridViewRow]@{ Height = 30 }
+    }
+
+    $newGrid.ColumnHeadersHeightSizeMode = 'DisableResizing'
+    $newGrid.ColumnHeadersHeight = 34
+
+    if ($isDarkMode)
+    {
+        $newGrid.DefaultCellStyle.SelectionForeColor = $newGrid.DefaultCellStyle.ForeColor
+        $newGrid.EnableHeadersVisualStyles = $false
+        $newGrid.ColumnHeadersDefaultCellStyle.SelectionBackColor = $newGrid.ColumnHeadersDefaultCellStyle.BackColor
+        $newGrid.ColumnHeadersDefaultCellStyle.SelectionForeColor = $newGrid.ColumnHeadersDefaultCellStyle.ForeColor
+    }
+
+    $newGrid
 }
 
 function New-MenuItem([string]$Text, [scriptblock]$OnClick)
@@ -479,7 +909,7 @@ $startAction = {
     Invoke-SessionAction -AllowDuringHandover {
         $repo = $repoBox.SelectedItem
         $name = $nameBox.Text.Trim()
-        $tabTitle = if ($name) { $name } else { $repo }
+        $tabTitle = if ($name) { $name } else { Split-Path $repo -Leaf }
         $claudeCommand = if ($name) { "claude --name $(ConvertTo-PwshLiteral $name)" } else { 'claude' }
 
         Open-ClaudeTab $tabTitle (Join-Path $settings.reposRoot $repo) $claudeCommand
@@ -508,19 +938,47 @@ $form = [System.Windows.Forms.Form]@{
     Font = [System.Drawing.Font]::new('Segoe UI', 10)
 }
 
-$topPanel = [System.Windows.Forms.FlowLayoutPanel]@{ Dock = 'Top'; AutoSize = $true; Padding = [System.Windows.Forms.Padding]::new(8) }
+# Starting a session and the navigation flow from the left; the color mode switch sits on its own at the right.
+$topBar = [System.Windows.Forms.TableLayoutPanel]@{ Dock = 'Top'; AutoSize = $true; ColumnCount = 2; RowCount = 1; Padding = [System.Windows.Forms.Padding]::new(8) }
+$topBar.ColumnStyles.Add([System.Windows.Forms.ColumnStyle]::new('Percent', 100)) | Out-Null
+$topBar.ColumnStyles.Add([System.Windows.Forms.ColumnStyle]::new('AutoSize')) | Out-Null
+$topPanel = [System.Windows.Forms.FlowLayoutPanel]@{ Dock = 'Fill'; AutoSize = $true; Margin = [System.Windows.Forms.Padding]::Empty }
 $labelMargin = [System.Windows.Forms.Padding]::new(3, 7, 3, 0)
-$repoBox = [System.Windows.Forms.ComboBox]@{ DropDownStyle = 'DropDownList'; Width = 220 }
-$repoBox.Items.AddRange([object[]]@(Get-ChildItem $settings.reposRoot -Directory | ForEach-Object Name))
-$repoBox.SelectedItem = $settings.defaultRepo
+$repoBox = [System.Windows.Forms.ComboBox]@{ DropDownStyle = 'DropDownList'; Width = 250 }
+$repoBox.Items.AddRange([object[]]@(Get-ClaudeRepo $settings.reposRoot))
+$widestRepo = ($repoBox.Items | ForEach-Object { [System.Windows.Forms.TextRenderer]::MeasureText($_, $form.Font).Width } | Measure-Object -Maximum).Maximum
+$repoBox.DropDownWidth = [Math]::Max($repoBox.Width, $widestRepo + 30)
+
+# A default that names no single repo leaves nothing selected.
+try
+{
+    $repoBox.SelectedItem = [IO.Path]::GetRelativePath($settings.reposRoot, (Resolve-ClaudeRepo $settings.reposRoot $settings.defaultRepo))
+}
+catch
+{
+}
 $nameBox = [System.Windows.Forms.TextBox]@{ Width = 260 }
 $nameBox.Add_KeyDown({ if ($_.KeyCode -eq 'Enter') { $_.SuppressKeyPress = $true; & $startAction } })
 
 $searchHistoryButton = New-Button 'Search history' { if ($script:searchMode) { Exit-SearchMode } else { Enter-SearchMode } }
-$searchHistoryButton.Margin = [System.Windows.Forms.Padding]::new(40, 3, 3, 3)
-$colorModeButton = New-Button ($isDarkMode ? 'Light mode' : 'Dark mode') $colorModeAction
-$colorModeButton.Margin = [System.Windows.Forms.Padding]::new(40, 3, 3, 3)
+$trackerButton = New-Button 'Tracker' { if ($script:trackerMode) { Exit-TrackerMode } else { Enter-TrackerMode } }
+$trackerButton.Visible = Test-ClaudeTracker $TrackerPath
+$archiveButton = New-Button 'Archive' { Show-TrackerArchive $true }
+$archiveButton.Visible = $false
+$backToTrackerButton = New-Button 'Back to tracker' { Show-TrackerArchive $false }
+$backToTrackerButton.Visible = $false
+
+# Its own panel, so the gap before it stays whichever of its buttons are hidden.
+$navigationPanel = [System.Windows.Forms.FlowLayoutPanel]@{ AutoSize = $true; WrapContents = $false; Margin = [System.Windows.Forms.Padding]::new(37, 0, 0, 0) }
+$navigationPanel.Controls.AddRange(@($searchHistoryButton, $trackerButton, $archiveButton, $backToTrackerButton))
+
+$colorModeName = $isDarkMode ? 'Light mode' : 'Dark mode'
+$colorModeButton = New-Button ($isDarkMode ? $LightModeMark : $DarkModeMark) $colorModeAction
+$colorModeButton.Font = [System.Drawing.Font]::new('Segoe UI Symbol', 11)
+$colorModeButton.AccessibleName = $colorModeName
+$colorModeButton.Anchor = 'Right'
 $colorModeButton.Visible = $canSwitchColorMode
+([System.Windows.Forms.ToolTip]::new()).SetToolTip($colorModeButton, $colorModeName)
 
 $topPanel.Controls.AddRange(@(
     [System.Windows.Forms.Label]@{ Text = 'New session in'; AutoSize = $true; Margin = $labelMargin }
@@ -528,18 +986,21 @@ $topPanel.Controls.AddRange(@(
     [System.Windows.Forms.Label]@{ Text = 'named'; AutoSize = $true; Margin = $labelMargin }
     $nameBox
     ($startButton = New-Button 'Start' $startAction)
-    $searchHistoryButton
-    $colorModeButton
+    $navigationPanel
 ))
+
+$topBar.Controls.Add($topPanel, 0, 0)
+$topBar.Controls.Add($colorModeButton, 1, 0)
 
 $searchPanel = [System.Windows.Forms.FlowLayoutPanel]@{ Dock = 'Top'; AutoSize = $true; Padding = [System.Windows.Forms.Padding]::new(8, 0, 8, 8); Visible = $false }
 $searchBox = [System.Windows.Forms.TextBox]@{ Width = 460 }
 $searchBox.Add_KeyDown({ if ($_.KeyCode -eq 'Enter') { $_.SuppressKeyPress = $true; Start-HistorySearch $searchBox.Text } })
+$searchButton = New-Button 'Search' { Start-HistorySearch $searchBox.Text }
 
 $searchPanel.Controls.AddRange(@(
     [System.Windows.Forms.Label]@{ Text = 'Search history for'; AutoSize = $true; Margin = $labelMargin }
     $searchBox
-    (New-Button 'Search' { Start-HistorySearch $searchBox.Text })
+    $searchButton
 ))
 
 $modeHeader = [System.Windows.Forms.Label]@{
@@ -550,25 +1011,7 @@ $modeHeader = [System.Windows.Forms.Label]@{
     Font = [System.Drawing.Font]::new('Segoe UI Semibold', 12)
 }
 
-$grid = [System.Windows.Forms.DataGridView]@{
-    Dock = 'Fill'
-    ReadOnly = $true
-    AllowUserToAddRows = $false
-    AllowUserToDeleteRows = $false
-    AllowUserToResizeRows = $false
-    SelectionMode = 'FullRowSelect'
-    MultiSelect = $false
-    RowHeadersVisible = $false
-    AutoSizeColumnsMode = 'Fill'
-    BorderStyle = 'None'
-    CellBorderStyle = 'SingleHorizontal'
-    BackgroundColor = [System.Drawing.SystemColors]::Window
-    RowTemplate = [System.Windows.Forms.DataGridViewRow]@{ Height = 30 }
-}
-
-$grid.ColumnHeadersHeightSizeMode = 'DisableResizing'
-$grid.ColumnHeadersHeight = 34
-
+$grid = New-Grid
 $pinColumn = [System.Windows.Forms.DataGridViewButtonColumn]@{ Name = 'Pin'; HeaderText = ''; FlatStyle = 'Standard'; AutoSizeMode = 'None'; Width = 44 }
 $pinColumn.DefaultCellStyle.Font = [System.Drawing.Font]::new('Segoe UI Symbol', 12)
 $grid.Columns.Add($pinColumn) | Out-Null
@@ -588,16 +1031,11 @@ $grid.Columns['Match'].FillWeight = 60
 $grid.Columns['Match'].SortMode = 'NotSortable'
 $grid.Columns['Match'].Visible = $false
 
-# Dark mode leaves the column headers and the star buttons drawn in the light theme, and draws the sort arrow in a grey that
-# hardly shows. So the headers are plain, without the current column's highlight, each star is drawn as a button like the
-# window's own, lighter under the mouse, and a solid arrow in the header's text color goes over the sort arrow. The selected row's
-# text is black on blue by default, so it stays white.
+# Dark mode leaves the star buttons drawn in the light theme, and draws the sort arrow in a grey that hardly shows. So each star
+# is drawn as a button like the window's own, lighter under the mouse, and a solid arrow in the header's text color goes over the
+# sort arrow.
 if ($isDarkMode)
 {
-    $grid.DefaultCellStyle.SelectionForeColor = $grid.DefaultCellStyle.ForeColor
-    $grid.EnableHeadersVisualStyles = $false
-    $grid.ColumnHeadersDefaultCellStyle.SelectionBackColor = $grid.ColumnHeadersDefaultCellStyle.BackColor
-    $grid.ColumnHeadersDefaultCellStyle.SelectionForeColor = $grid.ColumnHeadersDefaultCellStyle.ForeColor
     $script:hotPinRow = -1
 
     $grid.Add_CellMouseEnter({
@@ -704,7 +1142,101 @@ $grid.Add_KeyDown({
         { & $renameAction }
 })
 
+$trackerGrid = New-Grid
+
+foreach ($column in @(('Id', 26, 'Id'), ('Title', 44, 'Title'), ('Latest', 0, 'Latest'), ('InState', 0, 'In state'), ('After', 24, 'Depends on'), ('Outcome', 50, 'Outcome')))
+{
+    $trackerGrid.Columns.Add($column[0], $column[2]) | Out-Null
+    $trackerGrid.Columns[$column[0]].SortMode = 'NotSortable'
+
+    if ($column[1])
+        { $trackerGrid.Columns[$column[0]].FillWeight = $column[1] }
+    else
+        { $trackerGrid.Columns[$column[0]].AutoSizeMode = 'AllCells' }
+}
+
+$sectionFont = [System.Drawing.Font]::new('Segoe UI Semibold', 10)
+
+# A section's heading row spans the whole width: its cells paint only their background, and the name goes over them afterwards.
+$trackerGrid.Add_CellPainting({
+    if ($_.RowIndex -ge 0 -and $trackerGrid.Rows[$_.RowIndex].Tag -is [string])
+    {
+        $_.Paint($_.CellBounds, 'Background, Border')
+        $_.Handled = $true
+    }
+})
+
+$trackerGrid.Add_RowPostPaint({
+    $heading = $trackerGrid.Rows[$_.RowIndex].Tag
+
+    if ($heading -is [string])
+    {
+        $textBounds = [System.Drawing.Rectangle]::new($_.RowBounds.X + 6, $_.RowBounds.Y, $_.RowBounds.Width - 6, $_.RowBounds.Height)
+        [System.Windows.Forms.TextRenderer]::DrawText($_.Graphics, $heading, $sectionFont, $textBounds, [System.Drawing.SystemColors]::ControlText, 'Left, VerticalCenter')
+    }
+})
+
+$trackerGrid.Add_SelectionChanged({ Show-TrackerItemDetails })
+$trackerGrid.Add_CellDoubleClick({ if ($_.RowIndex -ge 0) { Open-SelectedTrackerDetails } })
+
+$trackerGrid.Add_KeyDown({
+    if ($_.KeyCode -eq 'Enter')
+    {
+        $_.SuppressKeyPress = $true
+        Open-SelectedTrackerDetails
+    }
+})
+
+$trackerTree = [System.Windows.Forms.TreeView]@{ Dock = 'Fill'; BorderStyle = 'None'; HideSelection = $false; ShowNodeToolTips = $true }
+
+# Double-clicking an item goes to it, and the tree then shows that item's dependencies. The tree is rebuilt only after the
+# double-click has been handled, so the control never finishes it on a node that is gone.
+$trackerTree.Add_NodeMouseDoubleClick({
+    $script:trackerItemToSelect = $_.Node.Tag.id
+
+    if ($script:trackerItemToSelect)
+        { $trackerTree.BeginInvoke([Action]{ Select-TrackerItem $script:trackerItemToSelect }) | Out-Null }
+})
+
+$trackerDetailsBox = [System.Windows.Forms.TextBox]@{
+    Dock = 'Fill'
+    Multiline = $true
+    ReadOnly = $true
+    ScrollBars = 'Vertical'
+    BorderStyle = 'None'
+    BackColor = [System.Drawing.SystemColors]::Window
+    Font = [System.Drawing.Font]::new('Consolas', 10)
+}
+
+$trackerTitleLabel = [System.Windows.Forms.Label]@{ Dock = 'Top'; Padding = [System.Windows.Forms.Padding]::new(0, 6, 0, 2); Font = [System.Drawing.Font]::new('Segoe UI Semibold', 12) }
+$trackerSubtitleLabel = [System.Windows.Forms.Label]@{ Dock = 'Top'; Height = 26; ForeColor = [System.Drawing.SystemColors]::GrayText }
+$trackerSidePanel = [System.Windows.Forms.SplitContainer]@{ Dock = 'Fill'; Orientation = 'Horizontal' }
+$trackerSidePanel.Panel1.Controls.AddRange(@($trackerDetailsBox, $trackerSubtitleLabel, $trackerTitleLabel))
+$trackerSidePanel.Panel1.Add_Resize({ Set-TrackerTitleHeight })
+$trackerSidePanel.Panel2.Controls.AddRange(@(
+    $trackerTree
+    [System.Windows.Forms.Label]@{ Text = 'Dependencies'; Dock = 'Top'; Height = 30; Padding = [System.Windows.Forms.Padding]::new(0, 6, 0, 0); Font = $sectionFont }
+))
+
+$trackerSplit = [System.Windows.Forms.SplitContainer]@{ Dock = 'Fill'; Visible = $false }
+$trackerSplit.Panel1.Controls.Add($trackerGrid)
+$trackerSplit.Panel2.Controls.Add($trackerSidePanel)
+$trackerSplit.Panel2.Padding = [System.Windows.Forms.Padding]::new(8, 0, 8, 0)
+
+# Shown only when the tracker goes away while it is open; without one the window has no Tracker button.
+$trackerDocsText = 'Optional: task tracker in the README'
+$trackerMissingText = "There is no tracker in $TrackerPath. The tracker is optional; to set one up, see $trackerDocsText."
+$trackerMissingLabel = [System.Windows.Forms.LinkLabel]@{ Dock = 'Fill'; Visible = $false; Padding = [System.Windows.Forms.Padding]::new(12, 8, 12, 0); Text = $trackerMissingText }
+$trackerMissingLabel.LinkArea = [System.Windows.Forms.LinkArea]::new($trackerMissingText.IndexOf($trackerDocsText), $trackerDocsText.Length)
+$trackerMissingLabel.Add_LinkClicked({ Start-Process $TrackerDocsUrl })
+
+# Dark mode keeps the light theme's dark blue link.
+if ($isDarkMode)
+    { $trackerMissingLabel.LinkColor = $trackerMissingLabel.ActiveLinkColor = [System.Drawing.Color]::LightSkyBlue }
+
 $bottomPanel = [System.Windows.Forms.FlowLayoutPanel]@{ Dock = 'Bottom'; AutoSize = $true; Padding = [System.Windows.Forms.Padding]::new(8) }
+$openDetailsButton = New-Button 'Open details' { Open-SelectedTrackerDetails }
+$openDetailsButton.Visible = $false
 $openButton = New-Button 'Open' $openAction
 $renameButton = New-Button 'Rename' $renameAction
 $pinButton = New-Button 'Pin' $pinAction
@@ -714,10 +1246,15 @@ $restoreButton = New-Button 'Restore pinned' $restoreAction
 $restoreButton.Margin = [System.Windows.Forms.Padding]::new(40, 3, 3, 3)
 $statusLabel = [System.Windows.Forms.Label]@{ AutoSize = $true; Margin = [System.Windows.Forms.Padding]::new(20, 9, 3, 0); ForeColor = [System.Drawing.SystemColors]::GrayText }
 $handoverLabel = [System.Windows.Forms.Label]@{ AutoSize = $true; Margin = [System.Windows.Forms.Padding]::new(20, 9, 3, 0); ForeColor = [System.Drawing.Color]::DarkOrange; Visible = $false }
-$bottomPanel.Controls.AddRange(@($openButton, $renameButton, $pinButton, $stopButton, $handoverButton, $restoreButton, $statusLabel, $handoverLabel))
+$bottomPanel.Controls.AddRange(@(
+    $openButton, $renameButton, $pinButton, $stopButton, $handoverButton, $restoreButton, $openDetailsButton, $statusLabel, $handoverLabel
+))
 
-$form.Controls.AddRange(@($grid, $searchPanel, $modeHeader, $topPanel, $bottomPanel))
-$grid.BringToFront()
+$form.Controls.AddRange(@($grid, $trackerSplit, $trackerMissingLabel, $searchPanel, $modeHeader, $topBar, $bottomPanel))
+
+foreach ($fillControl in @($grid, $trackerSplit, $trackerMissingLabel))
+    { $fillControl.BringToFront() }
+
 $form.KeyPreview = $true
 
 $form.Add_KeyDown({
@@ -732,6 +1269,45 @@ $form.Add_KeyDown({
         $_.SuppressKeyPress = $true
         Exit-SearchMode
     }
+
+    if ($_.KeyCode -eq 'Escape' -and $script:trackerMode)
+    {
+        $_.SuppressKeyPress = $true
+
+        if ($script:showArchive)
+            { Show-TrackerArchive $false }
+        else
+            { Exit-TrackerMode }
+    }
+})
+
+# Buttons beside input fields are as tall as the fields, so each bar lines up. The fields only have their real height once the
+# window's font reaches them.
+$form.Add_Load({
+    $fieldHeight = $repoBox.Height
+
+    foreach ($field in @($nameBox, $searchBox))
+    {
+        $field.AutoSize = $false
+        $field.Height = $fieldHeight
+    }
+
+    foreach ($button in @($startButton, $searchHistoryButton, $trackerButton, $archiveButton, $backToTrackerButton, $searchButton))
+        { $button.MinimumSize = $button.MaximumSize = [System.Drawing.Size]::new(0, $fieldHeight) }
+
+    # Dark mode repaints a button as soon as its text changes, before the bar is laid out again, so a button whose text switches
+    # keeps the width of its longer text; otherwise the new text shows wrapped in the old width for a moment.
+    foreach ($button in @($searchHistoryButton, $trackerButton))
+    {
+        $text = $button.Text
+        $button.Text = 'Back to live list'
+        $switchedWidth = $button.PreferredSize.Width
+        $button.Text = $text
+        $button.MinimumSize = [System.Drawing.Size]::new([Math]::Max($switchedWidth, $button.PreferredSize.Width), $fieldHeight)
+    }
+
+    $colorModeButton.AutoSize = $false
+    $colorModeButton.Size = [System.Drawing.Size]::new($fieldHeight + 8, $fieldHeight)
 })
 
 # Each listing starts a claude.exe (about 0.2 s of CPU and 180 MB for a moment), so it runs on a thread job to keep the window
@@ -778,6 +1354,19 @@ $timer.Add_Tick({
     if ($script:searchMode)
         { return }
 
+    if ($script:trackerMode)
+    {
+        if ((Get-Date) -ge $script:nextTrackerCheckAt)
+        {
+            $script:nextTrackerCheckAt = (Get-Date).AddSeconds(2)
+
+            if ((Get-TrackerFilesStamp) -ne $script:trackerFilesStamp)
+                { Show-Tracker }
+        }
+
+        return
+    }
+
     if ($script:refreshJob)
     {
         if ($script:refreshJob.State -notin 'Completed', 'Failed', 'Stopped')
@@ -816,7 +1405,13 @@ $timer.Add_Tick({
     }
 })
 
-$form.Add_Activated({ $script:nextRefreshAt = [datetime]::MinValue })
+# A tracker set up while the window is open gets its button the next time the window comes to the front.
+$form.Add_Activated({
+    $script:nextRefreshAt = [datetime]::MinValue
+
+    if (-not $script:trackerMode)
+        { $trackerButton.Visible = Test-ClaudeTracker $TrackerPath }
+})
 
 $form.Add_FormClosing({
     $closeQuestion = 'A handover is still being written. Close anyway? Writing it stops, and the old session stays pinned.'

@@ -100,20 +100,23 @@ Describe 'Profile line' {
 Describe 'Assert-DefaultRepo' {
     BeforeAll {
         $reposRoot = Join-Path $TestDrive 'repos'
-        New-Item -ItemType Directory -Force (Join-Path $reposRoot 'web-shop'), (Join-Path $reposRoot 'billing-api') | Out-Null
+        New-Item -ItemType Directory -Force (Join-Path $reposRoot 'web-shop'), (Join-Path $reposRoot 'billing-api'), (Join-Path $reposRoot 'clients\portal') | Out-Null
     }
 
-    It 'accepts the name of a folder under the repos folder' {
-        { Assert-DefaultRepo $reposRoot 'web-shop' } | Should -Not -Throw
+    It 'accepts <Case>' -ForEach @(
+        @{ Case = 'the name of a folder under the repos folder'; Value = 'web-shop' }
+        @{ Case = 'the path of a repo in a folder'; Value = 'clients\portal' }
+    ) {
+        { Assert-DefaultRepo $reposRoot $Value } | Should -Not -Throw
     }
 
     It 'refuses <Case>, naming the folders that are there' -ForEach @(
-        @{ Case = 'a full path'; Value = 'C:\repos\web-shop' }
-        @{ Case = 'a name with a separator'; Value = 'repos\web-shop' }
+        @{ Case = 'a full path'; Value = "$TestDrive\repos\web-shop" }
+        @{ Case = 'a path that leaves the repos folder'; Value = '..\repos\web-shop' }
         @{ Case = 'a folder that does not exist'; Value = 'mobile-app' }
         @{ Case = 'nothing'; Value = '' }
     ) {
-        { Assert-DefaultRepo $reposRoot $Value } | Should -Throw '*directly under*billing-api, web-shop*'
+        { Assert-DefaultRepo $reposRoot $Value } | Should -Throw '*path from there*billing-api, clients, web-shop*'
     }
 }
 

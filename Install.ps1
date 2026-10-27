@@ -100,17 +100,18 @@ function Add-ProfileLine([string]$Path)
     [IO.File]::WriteAllText($Path, "$profileText$separator$ProfileLine$([Environment]::NewLine)")
 }
 
-# Commands join the name to the repos folder, so a path here would point them at a folder that does not exist.
+# Commands join the default to the repos folder, so it is a path from there (my-repo, or Clients\my-repo when repos are kept in
+# folders); a full path would point them at a folder that does not exist.
 function Assert-DefaultRepo([string]$ReposRoot, [string]$DefaultRepo)
 {
-    $isName = $DefaultRepo -and $DefaultRepo.IndexOfAny([char[]]'\/:') -lt 0
+    $isRelative = $DefaultRepo -and -not [IO.Path]::IsPathRooted($DefaultRepo) -and $DefaultRepo -notmatch '(^|[\\/])\.\.([\\/]|$)'
 
-    if ($isName -and (Test-Path -LiteralPath (Join-Path $ReposRoot $DefaultRepo) -PathType Container))
+    if ($isRelative -and (Test-Path -LiteralPath (Join-Path $ReposRoot $DefaultRepo) -PathType Container))
         { return }
 
     $examples = @(Get-ChildItem -LiteralPath $ReposRoot -Directory | Select-Object -First 5 -ExpandProperty Name) -join ', '
 
-    throw "The default repo is the name of a folder directly under $ReposRoot, such as: $examples. '$DefaultRepo' is not one."
+    throw "The default repo is a folder under $ReposRoot, given as its path from there, such as: $examples. '$DefaultRepo' is not one."
 }
 
 function Assert-WindowClosed
@@ -252,7 +253,7 @@ function Invoke-Install
         if (-not (Test-Path -LiteralPath $settingsReposRoot -PathType Container))
             { throw "$settingsReposRoot is not a folder." }
 
-        $settingsDefaultRepo = if ($DefaultRepo) { $DefaultRepo } else { Read-Host "Name of the repo folder under $settingsReposRoot to use when a command names none" }
+        $settingsDefaultRepo = if ($DefaultRepo) { $DefaultRepo } else { Read-Host "Repo to use when a command names none, as its path under $settingsReposRoot (my-repo, or Clients\my-repo)" }
         Assert-DefaultRepo $settingsReposRoot $settingsDefaultRepo
 
         if ($PSCmdlet.ShouldProcess($settingsPath, 'Create the settings'))

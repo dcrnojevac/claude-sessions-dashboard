@@ -54,6 +54,47 @@ $sessions = @(
        Reply = 'Failed webhooks are retried three times with a growing delay, and a timeout no longer drops the event.' }
 )
 
+# Stamps are days before today, {0} to {14}, so the window shows a realistic time in each state.
+$daysAgo = 0..14 | ForEach-Object { (Get-Date).AddDays(-$_).ToString('yyyy-MM-dd') }
+$trackerIndex = @'
+# Tracker
+
+## In Progress
+
+- [checkout-address-step] Checkout: address form as its own step, cart summary kept visible. → items/checkout-address-step.md. Added {5}, started {2}.
+
+## Next
+
+- [checkout-analytics] Funnel analytics for the new checkout steps. After: [checkout-address-step]. Added {4}.
+- [pdf-export-letterhead] Invoice PDF export with the company letterhead. After: [invoice-template]. Added {4}.
+
+## Planned
+
+- [search-cache] Cache in front of the search endpoint. After: [search-load-test]. Trigger: search latency complaints. Added {9}, planned {6}.
+- [search-load-test] Load test for the search endpoint. Trigger: staging gets the new database. Added {9}, planned {6}.
+- [webhook-retries] Retries with a backoff for payment webhooks. After: payment provider ships the v3 webhook API. Added {12}, planned {8}.
+
+## Low Priority
+
+- [release-notes-template] Template for release notes, grouped by area. Added {12}, moved to Low Priority {3}.
+'@
+
+$trackerArchive = @'
+# Tracker archive
+
+Finished items, one line each with their stamps, `archived <date>` and the outcome.
+
+- [invoice-template] Shared invoice template for HTML and PDF. Added {14}, started {12}, archived {4}. Merged; PDF and email use the same template.
+'@
+
+$trackerDetails = @'
+# Checkout: address step
+
+- Validate on blur, not on submit.
+- The cart summary stays sticky on wide screens and collapses on phones.
+- Open question: keep the guest checkout link on this step?
+'@
+
 function Write-Transcript($Session, [string]$SessionId, [string]$Cwd)
 {
     $projectPath = Join-Path $projectsPath "C--demo-$($Session.Repo)"
@@ -159,6 +200,12 @@ try
         $agents.Add($agent)
     }
 
+    $trackerPath = Join-Path $demoRoot '.claude\tracker'
+    New-Item -ItemType Directory -Force (Join-Path $trackerPath 'items') | Out-Null
+    Set-Content (Join-Path $trackerPath 'TRACKER.md') ($trackerIndex -f $daysAgo) -Encoding utf8
+    Set-Content (Join-Path $trackerPath 'archive.md') ($trackerArchive -f $daysAgo) -Encoding utf8
+    Set-Content (Join-Path $trackerPath 'items\checkout-address-step.md') $trackerDetails -Encoding utf8
+
     Set-Content (Join-Path $demoRoot 'agents.json') (ConvertTo-Json -InputObject @($agents) -Depth 4)
     Set-Content (Join-Path $dataPath 'pins.json') (ConvertTo-Json -InputObject @($pins) -Depth 4)
     Set-Content (Join-Path $dataPath 'settings.json') (ConvertTo-Json -InputObject ([ordered]@{ reposRoot = $reposRoot; defaultRepo = 'web-shop' }))
@@ -199,6 +246,10 @@ exit /b 1
     Invoke-WindowButton $window 'Search'
     Start-Sleep -Seconds 5
     Save-WindowImage $window (Join-Path $OutputFolder 'screenshot-search.png')
+
+    Invoke-WindowButton $window 'Tracker'
+    Start-Sleep -Seconds 2
+    Save-WindowImage $window (Join-Path $OutputFolder 'screenshot-tracker.png')
 }
 finally
 {

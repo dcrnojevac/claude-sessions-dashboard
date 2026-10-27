@@ -2,6 +2,53 @@
 
 $ListedSessions = @()
 
+# Repo folders under one top folder of reposRoot: a folder with a .git is a repo and is not looked into; others are searched down
+# to the third level.
+function Find-ClaudeRepoFolder([string]$Path, [int]$Depth)
+{
+    if (Test-Path -LiteralPath (Join-Path $Path '.git'))
+        { return $Path }
+
+    if ($Depth -ge 3)
+        { return }
+
+    foreach ($folder in Get-ChildItem -LiteralPath $Path -Directory -ErrorAction SilentlyContinue | Where-Object Name -notlike '.*')
+        { Find-ClaudeRepoFolder $folder.FullName ($Depth + 1) }
+}
+
+# Repos as paths from reposRoot, so repos kept in folders (Clients\web-shop) sort by folder. A top folder with no repo in it is
+# listed as one itself, so a root of plain project folders lists every one of them.
+function Get-ClaudeRepo([string]$ReposRoot)
+{
+    $repoPaths = foreach ($folder in Get-ChildItem -LiteralPath $ReposRoot -Directory -ErrorAction SilentlyContinue | Where-Object Name -notlike '.*')
+    {
+        $nestedRepos = @(Find-ClaudeRepoFolder $folder.FullName 1)
+
+        if ($nestedRepos.Count -gt 0) { $nestedRepos } else { $folder.FullName }
+    }
+
+    $repoPaths | ForEach-Object { [IO.Path]::GetRelativePath($ReposRoot, $_) } | Sort-Object
+}
+
+# A path from reposRoot is used as given; a bare name is looked up among the repos and must name only one.
+function Resolve-ClaudeRepo([string]$ReposRoot, [string]$Repo)
+{
+    $repoPath = Join-Path $ReposRoot $Repo
+
+    if ($Repo -and (Test-Path -LiteralPath $repoPath -PathType Container))
+        { return $repoPath }
+
+    $matchingRepos = @(Get-ClaudeRepo $ReposRoot | Where-Object { (Split-Path $_ -Leaf) -eq $Repo })
+
+    if ($matchingRepos.Count -eq 1)
+        { return Join-Path $ReposRoot $matchingRepos[0] }
+
+    if ($matchingRepos.Count -gt 1)
+        { throw "'$Repo' is the name of $($matchingRepos.Count) repos under ${ReposRoot}: $($matchingRepos -join ', '). Name it with its folder, such as $($matchingRepos[0])." }
+
+    throw "There is no repo '$Repo' under $ReposRoot."
+}
+
 # Numbers refer to the last ccl or cch in this shell, so a session that became active in between cannot take another one's
 # number. A stopped session from that list (a cch result, say) resolves to the listed entry, so it can still be opened or pinned.
 function Resolve-ClaudeSession([string]$Target)
@@ -55,7 +102,7 @@ function Split-RepoArgument([object[]]$Arguments)
         $Arguments = @($Arguments | Select-Object -Skip 1)
     }
 
-    [pscustomobject]@{ Path = Join-Path $settings.reposRoot $repo; ClaudeArguments = @($Arguments) }
+    [pscustomobject]@{ Path = Resolve-ClaudeRepo $settings.reposRoot $repo; ClaudeArguments = @($Arguments) }
 }
 
 function acd
@@ -132,7 +179,7 @@ function cchandover
 function cchelp
 {
     @'
-acd     [repo]                  go to a repo under reposRoot (defaultRepo when omitted; both in settings.json)
+acd     [repo]                  go to a repo under reposRoot, by name or by path from it (defaultRepo when omitted; both in settings.json)
 cc      [repo] [claude flags]   start Claude in a repo, here in this tab      cc my-repo -n "feature x"
 ccbg    [repo] [claude flags]   start Claude in the background                ccbg my-repo -n "feature x"
 ccr     [repo] [search]         pick a past session in a repo to resume       ccr my-repo invoice
@@ -249,7 +296,19 @@ Register-ArgumentCompleter -Native -CommandName acd, cc, ccbg, ccr -ScriptBlock 
     if ($elementCount -gt 2 -or ($elementCount -eq 2 -and -not $wordToComplete))
         { return }
 
-    Get-ChildItem (Get-ClaudeSessionsSetting).reposRoot -Directory -Filter "$wordToComplete*" | ForEach-Object Name
+    # A repo completes to its name when no other repo has it, else to its path; typing a folder completes paths.
+    $repos = @(Get-ClaudeRepo (Get-ClaudeSessionsSetting).reposRoot)
+    $repoNames = @($repos | ForEach-Object { Split-Path $_ -Leaf })
+    $pattern = [WildcardPattern]::Escape($wordToComplete.Trim("'"))
+
+    foreach ($repo in $repos)
+    {
+        $name = Split-Path $repo -Leaf
+        $completion = if ($wordToComplete -match '[\\/]' -or @($repoNames -eq $name).Count -gt 1) { $repo } else { $name }
+
+        if ($name -like "$pattern*" -or $repo -like "$pattern*")
+            { if ($completion -match "[\s']") { ConvertTo-PwshLiteral $completion } else { $completion } }
+    }
 }
 
 Register-ArgumentCompleter -CommandName cchandover, cco, ccpin, ccrename, ccstop, ccunpin -ParameterName Target -ScriptBlock {
