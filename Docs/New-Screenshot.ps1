@@ -61,18 +61,18 @@ $trackerIndex = @'
 
 ## In Progress
 
-- [checkout-address-step] Checkout: address form as its own step, cart summary kept visible. → items/checkout-address-step.md. Added {5}, started {2}.
+- [checkout-address-step] Checkout: address form as its own step, cart summary kept visible. Repo: web-shop. → items/checkout-address-step.md. Added {5}, started {2}.
 
 ## Next
 
-- [checkout-analytics] Funnel analytics for the new checkout steps. After: [checkout-address-step]. Added {4}.
-- [pdf-export-letterhead] Invoice PDF export with the company letterhead. After: [invoice-template]. Added {4}.
+- [checkout-analytics] Funnel analytics for the new checkout steps. Repo: web-shop. After: [checkout-address-step]. Added {4}.
+- [pdf-export-letterhead] Invoice PDF export with the company letterhead. Repo: billing-api. After: [invoice-template]. Added {4}.
 
 ## Planned
 
-- [search-cache] Cache in front of the search endpoint. After: [search-load-test]. Trigger: search latency complaints. Added {9}, planned {6}.
-- [search-load-test] Load test for the search endpoint. Trigger: staging gets the new database. Added {9}, planned {6}.
-- [webhook-retries] Retries with a backoff for payment webhooks. After: payment provider ships the v3 webhook API. Added {12}, planned {8}.
+- [search-cache] Cache in front of the search endpoint. Repo: billing-api. After: [search-load-test]. Trigger: search latency complaints. Added {9}, planned {6}.
+- [search-load-test] Load test for the search endpoint. Repo: billing-api. Trigger: staging gets the new database. Added {9}, planned {6}.
+- [webhook-retries] Retries with a backoff for payment webhooks. Repo: billing-api. After: payment provider ships the v3 webhook API. Added {12}, planned {8}.
 
 ## Low Priority
 
@@ -84,7 +84,11 @@ $trackerArchive = @'
 
 Finished items, one line each with their stamps, `archived <date>` and the outcome.
 
-- [invoice-template] Shared invoice template for HTML and PDF. Added {14}, started {12}, archived {4}. Merged; PDF and email use the same template.
+- [login-timeout-fix] Flaky login test on fast devices. Repo: mobile-app. Added {14}, started {13}, archived {11}. The test waits for the screen, not the animation.
+- [backup-report] Weekly summary of the nightly backups. Repo: infra. Added {13}, archived {9}. Posted to the ops channel every Monday.
+- [vendor-call-notes] Notes from the payment provider call. Added {10}, archived {7}. Shared with the team.
+- [invoice-template] Shared invoice template for HTML and PDF. Repo: billing-api. Added {14}, started {12}, archived {4}. Merged; PDF and email use the same template.
+- [checkout-copy-review] Copy review of the checkout pages. Repo: web-shop. Added {8}, archived {2}. Two labels reworded.
 '@
 
 $trackerDetails = @'

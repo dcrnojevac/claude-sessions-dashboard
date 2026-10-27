@@ -119,8 +119,19 @@ $AfterStateNotes = @{
     unblocked = 'Everything it waited on is archived, so it can start.'
 }
 
+# The archive sorts within each repo's group; the open items keep their order in the file, which is their priority.
+$ArchiveSortKeys = @{
+    Title = { $_.title ?? $_.raw }
+    Latest = { $_.latestStamp.date }
+    Outcome = { $_.outcome }
+}
+
 $script:trackerMode = $false
 $script:trackerIsSetUp = $false
+$script:tracker = $null
+$script:trackerReadAt = $null
+$script:archiveSortColumn = 'Latest'
+$script:archiveSortDescending = $true
 $script:trackerItemsById = @{}
 $script:trackerOpenIds = [System.Collections.Generic.HashSet[string]]::new()
 $script:trackerWaitingItems = @{}
@@ -431,6 +442,7 @@ function Exit-TrackerMode
 {
     $script:trackerMode = $false
     $script:showArchive = $false
+    $trackerFilterBox.Clear()
     $script:nextRefreshAt = [datetime]::MinValue
     Set-TrackerVisibility
     $statusLabel.Text = $script:liveStatus
@@ -456,14 +468,15 @@ function Format-TrackerAfter($Item)
     {
         switch ($link.state)
         {
-            'open' { "[$($link.id)]" }
-            'archived' { "[$($link.id)] done" }
+            'open' { $script:trackerItemsById[$link.id].title }
+            'archived' { "$($script:trackerItemsById[$link.id].title) (done)" }
             'missing' { "[$($link.id)] not found" }
             default { $link.event }
         }
     }
 
-    $links -join ', '
+    # Titles have commas of their own.
+    $links -join '; '
 }
 
 # Picks the item in the list, switching between the open items and the archive when it is in the other one.
@@ -473,6 +486,9 @@ function Select-TrackerItem([string]$Id)
         { return }
 
     $isArchived = -not $script:trackerOpenIds.Contains($Id)
+
+    if (-not (Test-TrackerFilter $script:trackerItemsById[$Id]))
+        { $trackerFilterBox.Clear() }
 
     if ($isArchived -ne $script:showArchive)
         { Show-TrackerArchive $isArchived }
@@ -507,7 +523,6 @@ function Set-TrackerRow($Row, $Item)
 
     if (-not $Item.id)
     {
-        $Row.Cells['Id'].Value = '(as written)'
         $Row.Cells['Title'].Value = $Item.raw
         $Row.Cells['Title'].ToolTipText = 'This line is not in the tracker format, so it is shown as written.'
         $Row.DefaultCellStyle.ForeColor = [System.Drawing.SystemColors]::GrayText
@@ -515,8 +530,8 @@ function Set-TrackerRow($Row, $Item)
     }
 
     $values = [ordered]@{
-        Id = $Item.id
         Title = $Item.title
+        Repo = $Item.repo
         Latest = $Item.latestStamp.text
         InState = Format-ClaudeDaysSince $Item.latestStamp.date
         After = Format-TrackerAfter $Item
@@ -535,8 +550,7 @@ function Set-TrackerRow($Row, $Item)
     }
 }
 
-# Read on entering the tracker and again whenever one of its files changes; the files are small, so the rows are simply rebuilt.
-# Items stay in file order under a heading row per section; the archive shows newest first.
+# Read on entering the tracker and again whenever one of its files changes.
 function Show-Tracker
 {
     $script:trackerFilesStamp = Get-TrackerFilesStamp
@@ -552,12 +566,8 @@ function Show-Tracker
     }
 
     $script:trackerIsSetUp = $tracker.isSetUp
+    $script:tracker = $tracker
     Set-TrackerVisibility
-
-    foreach ($column in 'InState', 'After')
-        { $trackerGrid.Columns[$column].Visible = -not $script:showArchive }
-
-    $trackerGrid.Columns['Outcome'].Visible = $script:showArchive
 
     if (-not $tracker.isSetUp)
     {
@@ -585,35 +595,88 @@ function Show-Tracker
         }
     }
 
-    $shownItems = @(if ($script:showArchive) { $tracker.archivedItems } else { $tracker.items })
+    $script:trackerReadAt = Get-Date
+    Show-TrackerItems
+}
+
+# Every word of the filter is somewhere in the item's line, in any case.
+function Test-TrackerFilter($Item)
+{
+    foreach ($word in $trackerFilterBox.Text -split '\s+' | Where-Object { $_ })
+    {
+        if (-not $Item.raw.Contains($word, [StringComparison]::OrdinalIgnoreCase))
+            { return $false }
+    }
+
+    $true
+}
+
+# The open items stay in file order under a heading row per section. The archive has a heading row per repo, the items without one
+# last, and inside each the newest first unless a header click sorts them otherwise.
+function Show-TrackerItems
+{
+    $tracker = $script:tracker
+    $isArchive = $script:showArchive
+
+    foreach ($column in 'Repo', 'InState', 'After')
+        { $trackerGrid.Columns[$column].Visible = -not $isArchive }
+
+    $trackerGrid.Columns['Outcome'].Visible = $isArchive
+
+    foreach ($column in $trackerGrid.Columns)
+    {
+        $isSorted = $isArchive -and $column.Name -eq $script:archiveSortColumn
+        $column.SortMode = if ($isArchive -and $ArchiveSortKeys.Contains($column.Name)) { 'Programmatic' } else { 'NotSortable' }
+        $column.HeaderCell.SortGlyphDirection = if (-not $isSorted) { 'None' } elseif ($script:archiveSortDescending) { 'Descending' } else { 'Ascending' }
+    }
+
+    $shownItems = @(if ($isArchive) { $tracker.archivedItems } else { $tracker.items }) | Where-Object { Test-TrackerFilter $_ }
+
+    if ($isArchive)
+    {
+        $shownItems = @($shownItems)
+        [array]::Reverse($shownItems)
+
+        $order = @(
+            @{ Expression = { -not $_.repo } }
+            @{ Expression = { $_.repo } }
+            @{ Expression = $ArchiveSortKeys[$script:archiveSortColumn]; Descending = $script:archiveSortDescending }
+        )
+        $shownItems = $shownItems | Sort-Object -Stable $order
+    }
+
     $selectedId = (Get-SelectedTrackerItem).id
     $selectedRow = $null
     $headingRow = $null
     $trackerGrid.Rows.Clear()
 
-    if ($script:showArchive)
-        { [array]::Reverse($shownItems) }
+    # A column sized to its cells measures them all again for each row added, so sizing waits until the rows are in.
+    foreach ($column in $contentSizedTrackerColumns)
+        { $column.AutoSizeMode = 'None' }
 
     foreach ($item in $shownItems)
     {
-        $section = $item.section ?? 'No section'
+        $group = if ($isArchive) { $item.repo ?? 'No repo' } else { $item.section ?? 'No section' }
 
-        if (-not $headingRow -or $section -ne $headingSection)
+        if (-not $headingRow -or $group -ne $headingGroup)
         {
-            $headingSection = $section
+            $headingGroup = $group
             $headingRow = $trackerGrid.Rows[$trackerGrid.Rows.Add()]
             $headingRow.DefaultCellStyle.BackColor = [System.Drawing.SystemColors]::Control
-            $sectionCount = 0
+            $groupCount = 0
         }
 
         $row = $trackerGrid.Rows[$trackerGrid.Rows.Add()]
         Set-TrackerRow $row $item
-        $sectionCount++
-        $headingRow.Tag = "$section  ($sectionCount)"
+        $groupCount++
+        $headingRow.Tag = "$group  ($groupCount)"
 
         if (-not $selectedRow -or ($item.id -and $item.id -eq $selectedId))
             { $selectedRow = $row }
     }
+
+    foreach ($column in $contentSizedTrackerColumns)
+        { $column.AutoSizeMode = 'AllCells' }
 
     if ($selectedRow)
         { $trackerGrid.CurrentCell = $selectedRow.Cells['Title'] }
@@ -623,7 +686,8 @@ function Show-Tracker
     $openCount = @($tracker.items | Where-Object id).Count
     $rawCount = @($tracker.items + $tracker.archivedItems | Where-Object { -not $_.id }).Count
     $rawNote = if ($rawCount) { " · $rawCount lines not in the tracker format" }
-    $statusLabel.Text = "$openCount open · $($tracker.archivedItems.Count) archived$rawNote · read $((Get-Date).ToString('HH:mm:ss'))"
+    $filterNote = if ($trackerFilterBox.Text.Trim()) { " · $(@($shownItems).Count) match" }
+    $statusLabel.Text = "$openCount open · $($tracker.archivedItems.Count) archived$rawNote$filterNote · read $($script:trackerReadAt.ToString('HH:mm:ss'))"
 }
 
 function Show-TrackerItemDetails
@@ -1144,7 +1208,7 @@ $grid.Add_KeyDown({
 
 $trackerGrid = New-Grid
 
-foreach ($column in @(('Id', 26, 'Id'), ('Title', 44, 'Title'), ('Latest', 0, 'Latest'), ('InState', 0, 'In state'), ('After', 24, 'Depends on'), ('Outcome', 50, 'Outcome')))
+foreach ($column in @(('Title', 70, 'Title'), ('Repo', 0, 'Repo'), ('Latest', 0, 'Latest'), ('InState', 0, 'In state'), ('After', 24, 'Depends on'), ('Outcome', 50, 'Outcome')))
 {
     $trackerGrid.Columns.Add($column[0], $column[2]) | Out-Null
     $trackerGrid.Columns[$column[0]].SortMode = 'NotSortable'
@@ -1154,6 +1218,27 @@ foreach ($column in @(('Id', 26, 'Id'), ('Title', 44, 'Title'), ('Latest', 0, 'L
     else
         { $trackerGrid.Columns[$column[0]].AutoSizeMode = 'AllCells' }
 }
+
+$contentSizedTrackerColumns = @($trackerGrid.Columns | Where-Object AutoSizeMode -eq 'AllCells')
+
+$trackerGrid.Add_ColumnHeaderMouseClick({
+    $columnName = $trackerGrid.Columns[$_.ColumnIndex].Name
+
+    if (-not $script:showArchive -or -not $ArchiveSortKeys.Contains($columnName))
+        { return }
+
+    if ($columnName -eq $script:archiveSortColumn)
+    {
+        $script:archiveSortDescending = -not $script:archiveSortDescending
+    }
+    else
+    {
+        $script:archiveSortColumn = $columnName
+        $script:archiveSortDescending = $columnName -eq 'Latest'
+    }
+
+    Show-TrackerItems
+})
 
 $sectionFont = [System.Drawing.Font]::new('Segoe UI Semibold', 10)
 
@@ -1218,8 +1303,16 @@ $trackerSidePanel.Panel2.Controls.AddRange(@(
     [System.Windows.Forms.Label]@{ Text = 'Dependencies'; Dock = 'Top'; Height = 30; Padding = [System.Windows.Forms.Padding]::new(0, 6, 0, 0); Font = $sectionFont }
 ))
 
+$trackerFilterPanel = [System.Windows.Forms.FlowLayoutPanel]@{ Dock = 'Top'; AutoSize = $true; Padding = [System.Windows.Forms.Padding]::new(0, 0, 0, 6) }
+$trackerFilterBox = [System.Windows.Forms.TextBox]@{ Width = 460; PlaceholderText = 'Words anywhere in the line' }
+$trackerFilterBox.Add_TextChanged({ if ($script:trackerMode -and $script:trackerIsSetUp) { Show-TrackerItems } })
+$trackerFilterPanel.Controls.AddRange(@(
+    [System.Windows.Forms.Label]@{ Text = 'Filter'; AutoSize = $true; Margin = $labelMargin }
+    $trackerFilterBox
+))
+
 $trackerSplit = [System.Windows.Forms.SplitContainer]@{ Dock = 'Fill'; Visible = $false }
-$trackerSplit.Panel1.Controls.Add($trackerGrid)
+$trackerSplit.Panel1.Controls.AddRange(@($trackerGrid, $trackerFilterPanel))
 $trackerSplit.Panel2.Controls.Add($trackerSidePanel)
 $trackerSplit.Panel2.Padding = [System.Windows.Forms.Padding]::new(8, 0, 8, 0)
 
@@ -1261,7 +1354,16 @@ $form.Add_KeyDown({
     if ($_.Control -and $_.KeyCode -eq 'F')
     {
         $_.SuppressKeyPress = $true
-        Enter-SearchMode
+
+        if ($script:trackerMode -and $script:trackerIsSetUp)
+        {
+            $trackerFilterBox.Focus() | Out-Null
+            $trackerFilterBox.SelectAll()
+        }
+        else
+        {
+            Enter-SearchMode
+        }
     }
 
     if ($_.KeyCode -eq 'Escape' -and $script:searchMode)
@@ -1270,11 +1372,14 @@ $form.Add_KeyDown({
         Exit-SearchMode
     }
 
+    # Esc clears the filter first, and only then leaves the archive or the tracker.
     if ($_.KeyCode -eq 'Escape' -and $script:trackerMode)
     {
         $_.SuppressKeyPress = $true
 
-        if ($script:showArchive)
+        if ($trackerFilterBox.Text)
+            { $trackerFilterBox.Clear() }
+        elseif ($script:showArchive)
             { Show-TrackerArchive $false }
         else
             { Exit-TrackerMode }

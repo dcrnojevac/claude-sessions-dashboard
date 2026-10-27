@@ -10,9 +10,9 @@ $TrackerDatePattern = '\d{4}-\d{2}-\d{2}'
 $TrackerHistoryPattern = "(?<![\p{L}])Added $TrackerDatePattern(?:,\s*[A-Za-z]+(?: [A-Za-z]+)* $TrackerDatePattern)*\.?"
 $TrackerStampRunPattern = "(?<=^|\.\s+)[A-Za-z]+(?: [A-Za-z]+)* $TrackerDatePattern(?:,\s*[A-Za-z]+(?: [A-Za-z]+)* $TrackerDatePattern)*\.?"
 
-# One line: "- [id] Title. After: [other-id]. Trigger: text. → items/id.md. Added 2026-01-05, planned 2026-01-09." After can repeat
-# and holds ids, an outside event, or both. In archive.md the outcome follows the history. Only a bullet that starts with a
-# kebab-case [id] is an item; anything else comes back with id $null and its raw text.
+# One line: "- [id] Title. Repo: name. After: [other-id]. Trigger: text. → items/id.md. Added 2026-01-05, planned 2026-01-09."
+# After can repeat and holds ids, an outside event, or both. In archive.md the outcome follows the history. Only a bullet that
+# starts with a kebab-case [id] is an item; anything else comes back with id $null and its raw text.
 function ConvertFrom-ClaudeTrackerLine([string]$Line, [string]$Section)
 {
     $item = [pscustomobject]@{
@@ -20,6 +20,7 @@ function ConvertFrom-ClaudeTrackerLine([string]$Line, [string]$Section)
         section = $Section
         id = $null
         title = $null
+        repo = $null
         after = @()
         afterState = $null
         trigger = $null
@@ -59,17 +60,19 @@ function ConvertFrom-ClaudeTrackerLine([string]$Line, [string]$Section)
 
     # A keyword inside `code` (an even number of backticks before it means outside) is part of the text, and "->" starts a clause
     # only before items/, so an arrow in a title stays in the title.
-    $clauses = $text -split '\s*(?<=^[^`]*(?:`[^`]*`[^`]*)*)(?=(?<![\p{L}])(?:After|Trigger):|(?:→|->)\s*items/)'
+    $clauses = $text -split '\s*(?<=^[^`]*(?:`[^`]*`[^`]*)*)(?=(?<![\p{L}])(?:After|Trigger|Repo):|(?:→|->)\s*items/)'
     $item.title = $clauses[0].Trim().TrimEnd('.').Trim()
 
     foreach ($clause in $clauses | Select-Object -Skip 1)
     {
-        $value = ($clause -replace '^(?:After:|Trigger:|→|->)\s*', '').Trim().TrimEnd('.').Trim()
+        $value = ($clause -replace '^(?:After:|Trigger:|Repo:|→|->)\s*', '').Trim().TrimEnd('.').Trim()
 
         if ($clause.StartsWith('After:'))
             { $item.after += @(ConvertFrom-ClaudeTrackerAfter $value) }
         elseif ($clause.StartsWith('Trigger:'))
             { $item.trigger = ($item.trigger, $value | Where-Object { $_ }) -join '; ' }
+        elseif ($clause.StartsWith('Repo:'))
+            { $item.repo = $value }
         elseif ($value -match '^items/[\w.-]+\.md$')
             { $item.detailsLink = $value }
     }

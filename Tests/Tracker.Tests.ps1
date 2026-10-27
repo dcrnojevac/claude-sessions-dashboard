@@ -61,6 +61,17 @@ Describe 'ConvertFrom-ClaudeTrackerLine' {
         @($item.after.event | Where-Object { $_ }) | Should -Be @('the vendor ships 5.0')
     }
 
+    It 'reads the repo, wherever its clause sits' {
+        $line = '- [rate-limits] Rate limits on the public API. After: [usage-metrics]. Repo: public-api. Trigger: next sprint. Added 2026-01-05.'
+        $item = ConvertFrom-ClaudeTrackerLine $line 'Next'
+
+        $item.repo | Should -Be 'public-api'
+        $item.title | Should -Be 'Rate limits on the public API'
+        $item.after.id | Should -Be 'usage-metrics'
+        $item.trigger | Should -Be 'next sprint'
+        (ConvertFrom-ClaudeTrackerLine $baselineLine 'Planned').repo | Should -BeNullOrEmpty
+    }
+
     It 'keeps keywords inside `code` and arrows outside items/ in the title' {
         $line = '- [graph-view] Draw `After:` links as a tree, A -> B. Added 2026-01-05.'
         $item = ConvertFrom-ClaudeTrackerLine $line 'Next'
