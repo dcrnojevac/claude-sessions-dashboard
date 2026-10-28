@@ -289,3 +289,34 @@ Describe 'Format-ClaudeDaysSince' {
         Format-ClaudeDaysSince (Get-Date).Date.AddDays(-$Days) | Should -Be $Expected
     }
 }
+
+Describe 'Split-ClaudeTrackerBoldText' {
+    BeforeAll {
+        # Bold runs in angle brackets, so one string shows where each run starts and ends.
+        function Format-Runs($Runs)
+            { ($Runs | ForEach-Object { $_.isBold ? "<$($_.text)>" : $_.text }) -join '' }
+    }
+
+    It 'bolds <Name>' -ForEach @(
+        @{ Name = 'text between double asterisks, without them'; Text = 'Keep **the order** as is'; Expected = 'Keep <the order> as is' }
+        @{ Name = 'a known id, with its brackets'; Text = 'After: [invoice-ai-model-upgrade].'; Expected = 'After: <[invoice-ai-model-upgrade]>.' }
+        @{ Name = 'several runs on several lines'; Text = "**One**`n- [invoice-ai-model-upgrade] and **two**"; Expected = "<One>`n- <[invoice-ai-model-upgrade]> and <two>" }
+    ) {
+        Format-Runs (Split-ClaudeTrackerBoldText $Text @('invoice-ai-model-upgrade')) | Should -Be $Expected
+    }
+
+    It 'leaves <Name> plain' -ForEach @(
+        @{ Name = 'an id the tracker does not know'; Text = 'Writes to [etl].[KeyChange]' }
+        @{ Name = 'asterisks in a code span'; Text = 'Call `f(**a, **b)` here' }
+        @{ Name = 'a known id in a code span'; Text = 'See `[invoice-ai-model-upgrade]`' }
+        @{ Name = 'a fenced block'; Text = "``````python`nf(**a, **b)`n``````" }
+        @{ Name = 'asterisks that do not close on the same line'; Text = "**open`nclose**" }
+        @{ Name = 'asterisks around a space'; Text = 'a ** b ** c' }
+    ) {
+        Format-Runs (Split-ClaudeTrackerBoldText $Text @('invoice-ai-model-upgrade')) | Should -Be $Text
+    }
+
+    It 'returns nothing for empty text' {
+        Split-ClaudeTrackerBoldText '' @() | Should -BeNullOrEmpty
+    }
+}

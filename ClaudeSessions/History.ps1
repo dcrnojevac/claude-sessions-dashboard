@@ -191,6 +191,29 @@ function Search-ClaudeHistory([string]$Query)
     $matchingSessions | Sort-Object lastActive -Descending
 }
 
+# The text in plain and bold runs, bold wherever a search term matches, so a result's snippet shows why it matched.
+function Split-ClaudeSearchMatchText([string]$Text, [string]$Query)
+{
+    $isBold = [bool[]]::new($Text.Length)
+
+    foreach ($termPattern in ConvertTo-ClaudeSearchPattern $Query)
+    {
+        foreach ($termMatch in $termPattern.Matches($Text))
+            { [Array]::Fill($isBold, $true, $termMatch.Index, $termMatch.Length) }
+    }
+
+    $runStart = 0
+
+    for ($position = 1; $position -le $Text.Length; $position++)
+    {
+        if ($position -lt $Text.Length -and $isBold[$position] -eq $isBold[$runStart])
+            { continue }
+
+        [pscustomobject]@{ text = $Text.Substring($runStart, $position - $runStart); isBold = $isBold[$runStart] }
+        $runStart = $position
+    }
+}
+
 # Re-reads only transcripts whose size or write time changed. Each session's text gets its own file, so a search reads plain text
 # instead of parsing JSON; sessions whose transcript is gone drop out.
 function Update-ClaudeHistory

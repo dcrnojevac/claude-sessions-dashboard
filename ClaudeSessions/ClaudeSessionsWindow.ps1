@@ -367,6 +367,7 @@ function Set-SessionRow($Row, $Session)
         { $Row.Cells[$column].Value = $values[$column] }
 
     $Row.Tag = $Session
+    $Row.Cells['Match'].Tag = if ($Session.snippet) { @(Split-ClaudeSearchMatchText $Session.snippet $script:lastQuery) }
     $Row.Cells['Title'].ToolTipText = "$lastPrompt$($Session.name)  $($Session.sessionId)"
     $Row.DefaultCellStyle.ForeColor = if ($Session.running) { [System.Drawing.Color]::Empty } else { [System.Drawing.SystemColors]::GrayText }
     $Row.Cells['Status'].Style.ForeColor = if ($Session.status -eq 'busy') { [System.Drawing.Color]::DarkOrange } else { [System.Drawing.Color]::Empty }
@@ -716,10 +717,31 @@ function Show-TrackerItemDetails
 
     $trackerTitleLabel.Text = if ($item.id) { $item.title } elseif ($item) { 'A line not in the tracker format' } else { 'No item selected' }
     $trackerSubtitleLabel.Text = @($item.id, $item.section, $latest | Where-Object { $_ }) -join '  ·  '
-    $trackerDetailsBox.Text = if ($item) { ("$($item.raw)`n`n$details" -replace '\r?\n', "`r`n").TrimEnd() } else { '' }
+    Set-TrackerDetailsText $(if ($item) { "$($item.raw)`n`n$details".TrimEnd() } else { '' })
     Set-TrackerTitleHeight
     Show-TrackerTree $item
     Update-ActionState
+}
+
+# The box counts a line break as one character, so the bold runs are placed in text with \n breaks only.
+function Set-TrackerDetailsText([string]$Text)
+{
+    $runs = @(Split-ClaudeTrackerBoldText ($Text -replace '\r\n?', "`n") $script:trackerItemsById.Keys)
+    $trackerDetailsBox.Text = $runs.text -join ''
+    $runStart = 0
+
+    foreach ($run in $runs)
+    {
+        if ($run.isBold)
+        {
+            $trackerDetailsBox.Select($runStart, $run.text.Length)
+            $trackerDetailsBox.SelectionFont = $trackerDetailsBoldFont
+        }
+
+        $runStart += $run.text.Length
+    }
+
+    $trackerDetailsBox.Select(0, 0)
 }
 
 # The title wraps, so its label is as tall as the wrapped text at the pane's current width.
@@ -1095,6 +1117,36 @@ $grid.Columns['Match'].FillWeight = 60
 $grid.Columns['Match'].SortMode = 'NotSortable'
 $grid.Columns['Match'].Visible = $false
 
+# A cell has one font, so the Match text is drawn here, run by run, the search terms bold. The run that reaches the cell's edge
+# ends in an ellipsis like the other cells' text.
+$grid.Add_CellPainting({
+    if ($_.RowIndex -lt 0 -or $_.ColumnIndex -ne $grid.Columns['Match'].Index -or -not $grid.Rows[$_.RowIndex].Cells['Match'].Tag)
+        { return }
+
+    $_.Paint($_.CellBounds, [System.Windows.Forms.DataGridViewPaintParts]::All -bxor [System.Windows.Forms.DataGridViewPaintParts]::ContentForeground)
+    $script:searchMatchBoldFont ??= [System.Drawing.Font]::new('Segoe UI Semibold', $_.CellStyle.Font.Size, $_.CellStyle.Font.Unit)
+    $isSelected = $_.State.HasFlag([System.Windows.Forms.DataGridViewElementStates]::Selected)
+    $foreColor = if ($isSelected) { $_.CellStyle.SelectionForeColor } else { $_.CellStyle.ForeColor }
+    $flags = [System.Windows.Forms.TextFormatFlags]'NoPadding, NoPrefix, SingleLine, VerticalCenter'
+    $textBounds = [System.Drawing.Rectangle]::new($_.CellBounds.X + 2, $_.CellBounds.Y, $_.CellBounds.Width - 4, $_.CellBounds.Height - 1)
+    $x = $textBounds.X
+
+    foreach ($run in $grid.Rows[$_.RowIndex].Cells['Match'].Tag)
+    {
+        $font = if ($run.isBold) { $script:searchMatchBoldFont } else { $_.CellStyle.Font }
+        $runWidth = [System.Windows.Forms.TextRenderer]::MeasureText($_.Graphics, $run.text, $font, [System.Drawing.Size]::Empty, $flags).Width
+        $isLastShown = $x + $runWidth -gt $textBounds.Right
+        $runBounds = [System.Drawing.Rectangle]::new($x, $textBounds.Y, ($isLastShown ? $textBounds.Right - $x : $runWidth), $textBounds.Height)
+        [System.Windows.Forms.TextRenderer]::DrawText($_.Graphics, $run.text, $font, $runBounds, $foreColor, ($isLastShown ? $flags -bor [System.Windows.Forms.TextFormatFlags]::EndEllipsis : $flags))
+        $x += $runWidth
+
+        if ($isLastShown)
+            { break }
+    }
+
+    $_.Handled = $true
+})
+
 # Dark mode leaves the star buttons drawn in the light theme, and draws the sort arrow in a grey that hardly shows. So each star
 # is drawn as a button like the window's own, lighter under the mouse, and a solid arrow in the header's text color goes over the
 # sort arrow.
@@ -1272,7 +1324,38 @@ $trackerGrid.Add_KeyDown({
     }
 })
 
-$trackerTree = [System.Windows.Forms.TreeView]@{ Dock = 'Fill'; BorderStyle = 'None'; HideSelection = $false; ShowNodeToolTips = $true }
+$trackerTree = [System.Windows.Forms.TreeView]@{ Dock = 'Fill'; BorderStyle = 'None'; HideSelection = $false; ShowNodeToolTips = $true; DrawMode = 'OwnerDrawText' }
+
+# The details pane's bold Consolas, so an id looks the same in both; bold Segoe UI would stand out far more. The tree draws 10pt
+# Consolas at the size the details box needs 10.5pt for, since the two round points to pixels differently.
+$trackerTreeIdFont = [System.Drawing.Font]::new('Consolas', 10, [System.Drawing.FontStyle]::Bold)
+
+# A node can only be bold as a whole, so each node's text is drawn here, its leading [id] bold. Drawing one node means drawing
+# them all, so the group nodes match the selection colors too.
+$trackerTree.Add_DrawNode({
+    if ($_.Bounds.IsEmpty)
+        { return }
+
+    $idText = [regex]::Match($_.Node.Text, '^\[[^\]]+\]').Value
+    $restText = $_.Node.Text.Substring($idText.Length)
+    $isSelected = $_.State.HasFlag([System.Windows.Forms.TreeNodeStates]::Selected)
+    $isHighlighted = $isSelected -and $trackerTree.Focused
+    $flags = [System.Windows.Forms.TextFormatFlags]'NoPadding, NoPrefix, SingleLine, VerticalCenter'
+    $idWidth = if ($idText) { [System.Windows.Forms.TextRenderer]::MeasureText($_.Graphics, $idText, $trackerTreeIdFont, [System.Drawing.Size]::Empty, $flags).Width } else { 0 }
+    $restWidth = [System.Windows.Forms.TextRenderer]::MeasureText($_.Graphics, $restText, $trackerTree.Font, [System.Drawing.Size]::Empty, $flags).Width
+
+    $backColor = if ($isHighlighted) { [System.Drawing.SystemColors]::Highlight } elseif ($isSelected) { [System.Drawing.SystemColors]::Control } else { $trackerTree.BackColor }
+    $foreColor = if ($isHighlighted) { [System.Drawing.SystemColors]::HighlightText } elseif (-not $_.Node.ForeColor.IsEmpty) { $_.Node.ForeColor } else { $trackerTree.ForeColor }
+    $background = [System.Drawing.Rectangle]::new($_.Bounds.X, $_.Bounds.Y, [Math]::Max($_.Bounds.Width, $idWidth + $restWidth + 4), $_.Bounds.Height)
+    $idBounds = [System.Drawing.Rectangle]::new($background.X + 2, $background.Y, $idWidth, $background.Height)
+    $restBounds = [System.Drawing.Rectangle]::new($idBounds.Right, $background.Y, $restWidth, $background.Height)
+
+    $brush = [System.Drawing.SolidBrush]::new($backColor)
+    $_.Graphics.FillRectangle($brush, $background)
+    $brush.Dispose()
+    [System.Windows.Forms.TextRenderer]::DrawText($_.Graphics, $idText, $trackerTreeIdFont, $idBounds, $foreColor, $flags)
+    [System.Windows.Forms.TextRenderer]::DrawText($_.Graphics, $restText, $trackerTree.Font, $restBounds, $foreColor, $flags)
+})
 
 # Double-clicking an item goes to it, and the tree then shows that item's dependencies. The tree is rebuilt only after the
 # double-click has been handled, so the control never finishes it on a node that is gone.
@@ -1283,15 +1366,17 @@ $trackerTree.Add_NodeMouseDoubleClick({
         { $trackerTree.BeginInvoke([Action]{ Select-TrackerItem $script:trackerItemToSelect }) | Out-Null }
 })
 
-$trackerDetailsBox = [System.Windows.Forms.TextBox]@{
+# At 10pt the box draws Consolas a pixel step smaller, where its bold is hardly heavier than the regular text.
+$trackerDetailsBox = [System.Windows.Forms.RichTextBox]@{
     Dock = 'Fill'
-    Multiline = $true
     ReadOnly = $true
     ScrollBars = 'Vertical'
     BorderStyle = 'None'
+    DetectUrls = $false
     BackColor = [System.Drawing.SystemColors]::Window
-    Font = [System.Drawing.Font]::new('Consolas', 10)
+    Font = [System.Drawing.Font]::new('Consolas', 10.5)
 }
+$trackerDetailsBoldFont = [System.Drawing.Font]::new($trackerDetailsBox.Font, [System.Drawing.FontStyle]::Bold)
 
 $trackerTitleLabel = [System.Windows.Forms.Label]@{ Dock = 'Top'; Padding = [System.Windows.Forms.Padding]::new(0, 6, 0, 2); Font = [System.Drawing.Font]::new('Segoe UI Semibold', 12) }
 $trackerSubtitleLabel = [System.Windows.Forms.Label]@{ Dock = 'Top'; Height = 26; ForeColor = [System.Drawing.SystemColors]::GrayText }

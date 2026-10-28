@@ -31,3 +31,25 @@ Describe 'cch' {
         Should -Invoke Search-ClaudeHistory -ModuleName ClaudeSessions -ParameterFilter { $Query -eq '"connection refused"' } -Times 1 -Exactly
     }
 }
+
+Describe 'Split-ClaudeSearchMatchText' {
+    BeforeAll {
+        # Bold runs in angle brackets, so one string shows where each run starts and ends.
+        function Format-Runs($Runs)
+            { ($Runs | ForEach-Object { $_.isBold ? "<$($_.text)>" : $_.text }) -join '' }
+    }
+
+    It 'bolds <Name>' -ForEach @(
+        @{ Name = 'every match of every term'; Query = 'timeout retry'; Text = 'Timeout on retry, then another timeout'; Expected = '<Timeout> on <retry>, then another <timeout>' }
+        @{ Name = 'a quoted phrase across collapsed spaces'; Query = '"connection refused"'; Text = 'Got connection refused twice'; Expected = 'Got <connection refused> twice' }
+        @{ Name = 'a term at a capital inside a code name'; Query = 'notifier'; Text = 'EtlRunNotifier failed'; Expected = 'EtlRun<Notifier> failed' }
+        @{ Name = 'overlapping terms as one run'; Query = 'part partition'; Text = 'partition key'; Expected = '<partition> key' }
+        @{ Name = 'nothing inside a word'; Query = 'rent'; Text = 'current rent'; Expected = 'current <rent>' }
+    ) {
+        Format-Runs (Split-ClaudeSearchMatchText $Text $Query) | Should -Be $Expected
+    }
+
+    It 'returns nothing for empty text' {
+        Split-ClaudeSearchMatchText '' 'timeout' | Should -BeNullOrEmpty
+    }
+}

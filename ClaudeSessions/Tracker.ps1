@@ -215,6 +215,33 @@ function Read-ClaudeTrackerDetails([string]$Path)
     }
 }
 
+# The text in plain and bold runs: **text** without its markers, and an [id] the tracker knows with its brackets. The rest of the
+# Markdown stays as written, and code spans and fenced blocks are plain throughout, so ** or [name] in code is only text.
+function Split-ClaudeTrackerBoldText([string]$Text, [string[]]$KnownIds)
+{
+    $knownIdSet = [System.Collections.Generic.HashSet[string]]::new([string[]]@($KnownIds | Where-Object { $_ }))
+    $boldPattern = '(?s)```.*?```|`[^`\r\n]*`|\*\*(?=\S)(?<bold>[^\r\n]+?)(?<=\S)\*\*|\[(?<id>' + $TrackerIdPattern + ')\]'
+    $plainStart = 0
+
+    foreach ($match in [regex]::Matches($Text, $boldPattern))
+    {
+        $boldText = if ($match.Groups['bold'].Success) { $match.Groups['bold'].Value }
+            elseif ($match.Groups['id'].Success -and $knownIdSet.Contains($match.Groups['id'].Value)) { $match.Value }
+
+        if (-not $boldText)
+            { continue }
+
+        if ($match.Index -gt $plainStart)
+            { [pscustomobject]@{ text = $Text.Substring($plainStart, $match.Index - $plainStart); isBold = $false } }
+
+        [pscustomobject]@{ text = $boldText; isBold = $true }
+        $plainStart = $match.Index + $match.Length
+    }
+
+    if ($plainStart -lt $Text.Length)
+        { [pscustomobject]@{ text = $Text.Substring($plainStart); isBold = $false } }
+}
+
 function Test-ClaudeTracker([string]$Path)
 {
     $Path -and (Test-Path -LiteralPath (Join-Path $Path 'TRACKER.md') -PathType Leaf)
