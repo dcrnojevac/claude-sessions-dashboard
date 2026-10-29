@@ -204,6 +204,7 @@ function Get-ClaudeSession
 # current ones without reading files that grow to tens of MB. One turn can write more than 256 KB (a big tool result), so a
 # missing title or reply is looked for again in the last 4 MB. contextTokens is what Claude's last reply was sent. Each content
 # block is a record of its own, so the reply text is the newest record that has a text block, often after tool calls and thinking.
+# replyOpening is its first paragraph of prose, past any headings and code blocks, cut at 300 characters for replies that open long.
 function Get-ClaudeTranscriptInfo([string]$SessionId)
 {
     $info = [pscustomobject]@{
@@ -239,7 +240,11 @@ function Get-ClaudeTranscriptInfo([string]$SessionId)
     if ($reply)
     {
         $replyText = @($reply.message.content | Where-Object type -eq 'text').text -join "`n"
-        $info.replyOpening = (($replyText.Trim() -split '\r?\n\s*\r?\n')[0] -replace '\*\*|`|^#+\s*', '' -replace '\s+', ' ').Trim()
+        $prose = $replyText -replace '(?ms)^\s*```.*?^\s*```', '' -replace '(?m)^[ \t]*#+[ \t].*$', ''
+        $opening = @($prose -split '\r?\n\s*\r?\n' | Where-Object { $_.Trim() })[0] ?? $replyText
+        $opening = ($opening -replace '\[([^\]]*)\]\([^)]*\)', '$1' -replace '(?m)^[ \t]*([-*+]|\d+\.)[ \t]+', '' -replace '\*\*|`', '' -replace '\s+', ' ').Trim()
+
+        $info.replyOpening = if ($opening.Length -gt 300) { "$($opening.Substring(0, 300))..." } else { $opening }
     }
 
     $info.lastActive = $transcript.LastWriteTime

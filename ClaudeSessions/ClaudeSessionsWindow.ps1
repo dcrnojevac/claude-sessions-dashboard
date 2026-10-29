@@ -351,12 +351,11 @@ function Set-SessionRow($Row, $Session)
     $status = @($Session.status, $Session.state) | Where-Object { $_ }
     $memory = if ($Session.memoryMB) { "$($Session.memoryMB) MB" }
     $lastPrompt = if ($Session.lastPrompt) { "Last prompt: $($Session.lastPrompt.Substring(0, [Math]::Min(300, $Session.lastPrompt.Length)))`n`n" }
-    $reply = "$($Session.replyOpening)"
 
     $values = [ordered]@{
         Pin = $pinMark
         Title = $Session.title
-        Reply = $reply.Substring(0, [Math]::Min(300, $reply.Length))
+        Reply = $Session.replyOpening
         Branch = $Session.branch
         Repo = Split-Path $Session.cwd -Leaf
         Kind = $Session.kind

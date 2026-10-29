@@ -164,15 +164,22 @@ Describe 'Get-ClaudeTranscriptInfo' {
         $info.lastPrompt | Should -Be 'latest'
     }
 
-    It 'takes the opening paragraph of the last reply with text, without markdown' {
+    It 'opens the last reply with text at <Name>' -ForEach @(
+        @{ Name = 'its first paragraph, without markdown'; Text = "**Done:** the ``Cart`` total`nrounds now.`n`n**Details**`n- more"; Expected = 'Done: the Cart total rounds now.' }
+        @{ Name = 'the prose after a heading and a code block'; Text = "## Summary`n``````text`nlog`n```````n`nThe fix is in."; Expected = 'The fix is in.' }
+        @{ Name = 'a list, with link text kept'; Text = "- See [the guide](https://example.com) first`n- then run it"; Expected = 'See the guide first then run it' }
+        @{ Name = 'the code when there is nothing else'; Text = "``````text`nlog`n``````"; Expected = 'text log' }
+        @{ Name = '300 characters of a long paragraph'; Text = 'word ' * 100; Expected = ('word ' * 60).Substring(0, 300) + '...' }
+    ) {
+        $replyRecord = @{ type = 'assistant'; message = @{ content = @(@{ type = 'text'; text = $Text }) } } | ConvertTo-Json -Compress -Depth 5
         $lines = @(
             '{"type":"assistant","message":{"content":[{"type":"text","text":"An older reply."}]}}'
-            '{"type":"assistant","message":{"content":[{"type":"text","text":"**Done:** the `Cart` total\nrounds now.\n\n**Details**\n- more"}]}}'
+            $replyRecord
             '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"echo"}}]}}'
         )
         [IO.File]::WriteAllLines("$TestDrive\transcript.jsonl", $lines)
         Mock Get-Item -ModuleName ClaudeSessions { Microsoft.PowerShell.Management\Get-Item -LiteralPath "$TestDrive\transcript.jsonl" }
 
-        (Get-ClaudeTranscriptInfo $sessionId).replyOpening | Should -Be 'Done: the Cart total rounds now.'
+        (Get-ClaudeTranscriptInfo $sessionId).replyOpening | Should -Be $Expected
     }
 }

@@ -61,9 +61,10 @@ install until you run the installer again.
 ## The window
 
 The window lists running sessions first, most recently active on top, then pinned sessions that are not running (greyed). It
-refreshes every 10 seconds while it is not minimized. Header clicks sort; hover a title for the session's last prompt and ID. It
-is light or dark as the Windows app mode is (Settings > Personalization > Colors) until you switch it with its own button; dark
-needs PowerShell 7.5 or later, and on 7.4 the window is always light and has no switch.
+refreshes every 10 seconds while it is not minimized. **Last reply** shows the opening paragraph of Claude's latest reply. Header
+clicks sort; hover a title for the session's last prompt and ID. It is light or dark as the Windows app mode is (Settings >
+Personalization > Colors) until you switch it with its own button; dark needs PowerShell 7.5 or later, and on 7.4 the window is
+always light and has no switch.
 
 | Action | How |
 | --- | --- |
@@ -253,9 +254,9 @@ Everything the tool keeps is in `%LOCALAPPDATA%\ClaudeSessions\`:
   tab when you click or type the matching action. Stop ends the session's process, or runs `claude stop` for a background
   session. Hand over also runs `claude -p --resume` in the session's folder, which adds the handover turn to the old
   conversation.
-- **Reads** the end of each session's transcript under `~\.claude\projects\` (the last 256 KB, up to 4 MB when the title is
-  further back) for its title, branch, last prompt and context size, and for search the whole transcript, once per change. It
-  never writes there. If you have a [task tracker](#optional-task-tracker), it reads its files too, and never writes them.
+- **Reads** the end of each session's transcript under `~\.claude\projects\` (the last 256 KB, up to 4 MB when the title or reply
+  is further back) for its title, branch, last prompt, last reply and context size, and for search the whole transcript, once per
+  change. It never writes there. If you have a [task tracker](#optional-task-tracker), it reads its files too, and never writes them.
 - **Writes** only its own files in `%LOCALAPPDATA%\ClaudeSessions\`, each through a temporary file that replaces the old one, so
   nothing reads a half-written file. The only file it ever removes is a search-cache entry whose transcript Claude Code has
   already deleted, and that goes to the Recycle Bin.
