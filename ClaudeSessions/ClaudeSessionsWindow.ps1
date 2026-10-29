@@ -88,7 +88,7 @@ $SortKeys = @{
 }
 
 $NewestFirstColumns = @('Active', 'Context', 'Memory')
-$LiveOnlyColumns = @('Pin', 'Kind', 'Status', 'Context', 'Memory')
+$LiveOnlyColumns = @('Pin', 'Reply', 'Kind', 'Status', 'Context', 'Memory')
 
 $script:actionRunning = $false
 $script:handoverJob = $null
@@ -351,10 +351,12 @@ function Set-SessionRow($Row, $Session)
     $status = @($Session.status, $Session.state) | Where-Object { $_ }
     $memory = if ($Session.memoryMB) { "$($Session.memoryMB) MB" }
     $lastPrompt = if ($Session.lastPrompt) { "Last prompt: $($Session.lastPrompt.Substring(0, [Math]::Min(300, $Session.lastPrompt.Length)))`n`n" }
+    $reply = "$($Session.replyOpening)"
 
     $values = [ordered]@{
         Pin = $pinMark
         Title = $Session.title
+        Reply = $reply.Substring(0, [Math]::Min(300, $reply.Length))
         Branch = $Session.branch
         Repo = Split-Path $Session.cwd -Leaf
         Kind = $Session.kind
@@ -1118,12 +1120,15 @@ $pinColumn = [System.Windows.Forms.DataGridViewButtonColumn]@{ Name = 'Pin'; Hea
 $pinColumn.DefaultCellStyle.Font = [System.Drawing.Font]::new('Segoe UI Symbol', 12)
 $grid.Columns.Add($pinColumn) | Out-Null
 
-foreach ($column in @(('Title', 32), ('Branch', 24), ('Repo', 9), ('Kind', 9), ('Status', 10), ('Active', 11), ('Context', 7), ('Memory', 8)))
+foreach ($column in @(('Title', 24), ('Reply', 30), ('Branch', 18), ('Repo', 9), ('Kind', 9), ('Status', 10), ('Active', 11), ('Context', 7), ('Memory', 8)))
 {
     $grid.Columns.Add($column[0], $column[0]) | Out-Null
     $grid.Columns[$column[0]].FillWeight = $column[1]
     $grid.Columns[$column[0]].SortMode = 'Programmatic'
 }
+
+$grid.Columns['Reply'].HeaderText = 'Last reply'
+$grid.Columns['Reply'].SortMode = 'NotSortable'
 
 foreach ($column in @('Context', 'Memory'))
     { $grid.Columns[$column].DefaultCellStyle.Alignment = 'MiddleRight' }

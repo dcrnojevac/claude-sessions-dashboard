@@ -163,4 +163,16 @@ Describe 'Get-ClaudeTranscriptInfo' {
         $info.contextTokens | Should -Be 24000
         $info.lastPrompt | Should -Be 'latest'
     }
+
+    It 'takes the opening paragraph of the last reply with text, without markdown' {
+        $lines = @(
+            '{"type":"assistant","message":{"content":[{"type":"text","text":"An older reply."}]}}'
+            '{"type":"assistant","message":{"content":[{"type":"text","text":"**Done:** the `Cart` total\nrounds now.\n\n**Details**\n- more"}]}}'
+            '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"echo"}}]}}'
+        )
+        [IO.File]::WriteAllLines("$TestDrive\transcript.jsonl", $lines)
+        Mock Get-Item -ModuleName ClaudeSessions { Microsoft.PowerShell.Management\Get-Item -LiteralPath "$TestDrive\transcript.jsonl" }
+
+        (Get-ClaudeTranscriptInfo $sessionId).replyOpening | Should -Be 'Done: the Cart total rounds now.'
+    }
 }

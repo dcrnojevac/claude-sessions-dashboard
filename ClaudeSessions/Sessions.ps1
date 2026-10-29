@@ -185,6 +185,7 @@ function Get-ClaudeSession
             branch = $transcript.branch
             lastActive = $transcript.lastActive
             lastPrompt = $transcript.lastPrompt
+            replyOpening = $transcript.replyOpening
             contextTokens = $transcript.contextTokens
             memoryMB = $memoryMB
         })
@@ -201,13 +202,15 @@ function Get-ClaudeSession
 
 # Claude Code appends the title (once per prompt), last prompt and git branch to the transcript as it goes, so the tail has the
 # current ones without reading files that grow to tens of MB. One turn can write more than 256 KB (a big tool result), so a
-# missing title or reply is looked for again in the last 4 MB. contextTokens is what Claude's last reply was sent.
+# missing title or reply is looked for again in the last 4 MB. contextTokens is what Claude's last reply was sent. Each content
+# block is a record of its own, so the reply text is the newest record that has a text block, often after tool calls and thinking.
 function Get-ClaudeTranscriptInfo([string]$SessionId)
 {
     $info = [pscustomobject]@{
         aiTitle = $null
         customTitle = $null
         lastPrompt = $null
+        replyOpening = $null
         branch = $null
         contextTokens = $null
         lastActive = $null
@@ -223,13 +226,20 @@ function Get-ClaudeTranscriptInfo([string]$SessionId)
         $lines = $tail -split "`n"
         $branchMatch = [regex]::Matches($tail, '"gitBranch":"([^"]*)"') | Select-Object -Last 1
         $usage = (Select-LastTranscriptRecord $lines 'assistant').message.usage
+        $reply = Select-LastTranscriptRecord $lines 'assistant' { $_.message.content.type -contains 'text' }
 
         $info.aiTitle = (Select-LastTranscriptRecord $lines 'ai-title').aiTitle
         $info.customTitle = (Select-LastTranscriptRecord $lines 'custom-title').customTitle
         $info.lastPrompt = (Select-LastTranscriptRecord $lines 'last-prompt').lastPrompt
 
-        if ($transcript.Length -le $tailLength -or (($info.customTitle -or $info.aiTitle) -and $usage))
+        if ($transcript.Length -le $tailLength -or (($info.customTitle -or $info.aiTitle) -and $usage -and $reply))
             { break }
+    }
+
+    if ($reply)
+    {
+        $replyText = @($reply.message.content | Where-Object type -eq 'text').text -join "`n"
+        $info.replyOpening = (($replyText.Trim() -split '\r?\n\s*\r?\n')[0] -replace '\*\*|`|^#+\s*', '' -replace '\s+', ' ').Trim()
     }
 
     $info.lastActive = $transcript.LastWriteTime
@@ -398,7 +408,7 @@ function Resume-ClaudeInTab($Session)
 
 # Scans back to the newest matching record that parses: the last line may be half-written, the first one cut by the tail read.
 # Subagent replies (isSidechain) carry their own, smaller context, so they are skipped.
-function Select-LastTranscriptRecord([string[]]$Lines, [string]$Type)
+function Select-LastTranscriptRecord([string[]]$Lines, [string]$Type, [scriptblock]$Where = { $true })
 {
     for ($index = $Lines.Count - 1; $index -ge 0; $index--)
     {
@@ -409,12 +419,15 @@ function Select-LastTranscriptRecord([string[]]$Lines, [string]$Type)
 
         try
         {
-            return $line | ConvertFrom-Json -ErrorAction Stop
+            $record = $line | ConvertFrom-Json -ErrorAction Stop
         }
         catch
         {
             continue
         }
+
+        if ($record | Where-Object $Where)
+            { return $record }
     }
 }
 
