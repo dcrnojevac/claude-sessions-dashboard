@@ -10,8 +10,8 @@ $TrackerDatePattern = '\d{4}-\d{2}-\d{2}'
 $TrackerHistoryPattern = "(?<![\p{L}])Added $TrackerDatePattern(?:,\s*[A-Za-z]+(?: [A-Za-z]+)* $TrackerDatePattern)*\.?"
 $TrackerStampRunPattern = "(?<=^|\.\s+)[A-Za-z]+(?: [A-Za-z]+)* $TrackerDatePattern(?:,\s*[A-Za-z]+(?: [A-Za-z]+)* $TrackerDatePattern)*\.?"
 
-# One line: "- [id] Title. Repo: name. After: [other-id]. Trigger: text. → items/id.md. Added 2026-01-05, planned 2026-01-09."
-# After can repeat and holds ids, an outside event, or both. In archive.md the outcome follows the history. Only a bullet that
+# One line: "- [id] Title. Repo: name. After: [other-id]. Trigger: text. Due: 2026-01-20. → items/id.md. Added 2026-01-05, planned 2026-01-09."
+# After can repeat and holds ids, an outside event, or both. A Due that is not a date keeps its text without a dueDate. In archive.md the outcome follows the history. Only a bullet that
 # starts with a kebab-case [id] is an item; anything else comes back with id $null and its raw text.
 function ConvertFrom-ClaudeTrackerLine([string]$Line, [string]$Section)
 {
@@ -24,6 +24,8 @@ function ConvertFrom-ClaudeTrackerLine([string]$Line, [string]$Section)
         after = @()
         afterState = $null
         trigger = $null
+        due = $null
+        dueDate = $null
         detailsLink = $null
         detailsPath = $null
         stamps = @()
@@ -60,12 +62,12 @@ function ConvertFrom-ClaudeTrackerLine([string]$Line, [string]$Section)
 
     # A keyword inside `code` (an even number of backticks before it means outside) is part of the text, and "->" starts a clause
     # only before items/, so an arrow in a title stays in the title.
-    $clauses = $text -split '\s*(?<=^[^`]*(?:`[^`]*`[^`]*)*)(?=(?<![\p{L}])(?:After|Trigger|Repo):|(?:→|->)\s*items/)'
+    $clauses = $text -split '\s*(?<=^[^`]*(?:`[^`]*`[^`]*)*)(?=(?<![\p{L}])(?:After|Trigger|Repo|Due):|(?:→|->)\s*items/)'
     $item.title = $clauses[0].Trim().TrimEnd('.').Trim()
 
     foreach ($clause in $clauses | Select-Object -Skip 1)
     {
-        $value = ($clause -replace '^(?:After:|Trigger:|Repo:|→|->)\s*', '').Trim().TrimEnd('.').Trim()
+        $value = ($clause -replace '^(?:After:|Trigger:|Repo:|Due:|→|->)\s*', '').Trim().TrimEnd('.').Trim()
 
         if ($clause.StartsWith('After:'))
             { $item.after += @(ConvertFrom-ClaudeTrackerAfter $value) }
@@ -73,6 +75,12 @@ function ConvertFrom-ClaudeTrackerLine([string]$Line, [string]$Section)
             { $item.trigger = ($item.trigger, $value | Where-Object { $_ }) -join '; ' }
         elseif ($clause.StartsWith('Repo:'))
             { $item.repo = $value }
+        elseif ($clause.StartsWith('Due:'))
+        {
+            $date = [datetime]::MinValue
+            $item.due = $value
+            $item.dueDate = if ([datetime]::TryParseExact($value, 'yyyy-MM-dd', [cultureinfo]::InvariantCulture, 'None', [ref]$date)) { $date }
+        }
         elseif ($value -match '^items/[\w.-]+\.md$')
             { $item.detailsLink = $value }
     }
@@ -114,6 +122,24 @@ function Format-ClaudeDaysSince($Date)
         { $_ -le 0 } { 'today' }
         1 { '1 day' }
         default { "$days days" }
+    }
+}
+
+# "today", "in 1 day", "in 4 days", "2 days overdue": how far off an item's due date is.
+function Format-ClaudeDaysUntil($Date)
+{
+    if (-not $Date)
+        { return }
+
+    $days = [int]($Date.Date - (Get-Date).Date).TotalDays
+
+    switch ($days)
+    {
+        0 { 'today' }
+        1 { 'in 1 day' }
+        -1 { '1 day overdue' }
+        { $_ -lt -1 } { "$(-$days) days overdue" }
+        default { "in $days days" }
     }
 }
 

@@ -118,11 +118,13 @@ $AfterStateNotes = @{
     waiting = 'Waits on an outside event.'
     unblocked = 'Everything it waited on is archived, so it can start.'
 }
+$AfterStateLabels = @{ blocked = 'No'; unknown = 'Unknown id'; waiting = 'Waiting'; unblocked = 'Yes' }
+$DueSoonDays = 3
 
 # The archive sorts within each repo's group; the open items keep their order in the file, which is their priority.
 $ArchiveSortKeys = @{
     Title = { $_.title ?? $_.raw }
-    Latest = { $_.latestStamp.date }
+    Since = { $_.latestStamp.date }
     Outcome = { $_.outcome }
 }
 
@@ -130,7 +132,7 @@ $script:trackerMode = $false
 $script:trackerIsSetUp = $false
 $script:tracker = $null
 $script:trackerReadAt = $null
-$script:archiveSortColumn = 'Latest'
+$script:archiveSortColumn = 'Since'
 $script:archiveSortDescending = $true
 $script:trackerItemsById = @{}
 $script:trackerOpenIds = [System.Collections.Generic.HashSet[string]]::new()
@@ -530,12 +532,17 @@ function Set-TrackerRow($Row, $Item)
         return
     }
 
+    $stampDate = $Item.latestStamp.date
+    $since = if (-not $stampDate) { $Item.latestStamp.text }
+        elseif ($script:showArchive) { $stampDate.ToString('yyyy-MM-dd') }
+        else { "$($stampDate.ToString('yyyy-MM-dd')), $(Format-ClaudeDaysSince $stampDate)" }
+
     $values = [ordered]@{
         Title = $Item.title
         Repo = $Item.repo
-        Latest = $Item.latestStamp.text
-        InState = Format-ClaudeDaysSince $Item.latestStamp.date
-        After = Format-TrackerAfter $Item
+        Since = $since
+        After = if ($Item.afterState) { $AfterStateLabels[$Item.afterState] }
+        Due = @($Item.due, (Format-ClaudeDaysUntil $Item.dueDate) | Where-Object { $_ }) -join ', '
         Outcome = $Item.outcome
     }
 
@@ -543,11 +550,20 @@ function Set-TrackerRow($Row, $Item)
         { $Row.Cells[$column].Value = $values[$column] }
 
     $Row.Cells['Title'].ToolTipText = $Item.raw
+    $Row.Cells['Since'].ToolTipText = $Item.latestStamp.text
 
     if ($Item.afterState)
     {
-        $Row.Cells['After'].ToolTipText = $AfterStateNotes[$Item.afterState]
+        $Row.Cells['After'].ToolTipText = "$($AfterStateNotes[$Item.afterState])`n$(Format-TrackerAfter $Item)"
         $Row.Cells['After'].Style.ForeColor = $AfterStateColors[$Item.afterState] ?? [System.Drawing.Color]::Empty
+    }
+
+    if ($Item.dueDate)
+    {
+        $daysLeft = ($Item.dueDate.Date - (Get-Date).Date).TotalDays
+        $Row.Cells['Due'].Style.ForeColor = if ($daysLeft -le 0) { [System.Drawing.Color]::IndianRed }
+            elseif ($daysLeft -le $DueSoonDays) { [System.Drawing.Color]::DarkOrange }
+            else { [System.Drawing.Color]::Empty }
     }
 }
 
@@ -619,7 +635,7 @@ function Show-TrackerItems
     $tracker = $script:tracker
     $isArchive = $script:showArchive
 
-    foreach ($column in 'Repo', 'InState', 'After')
+    foreach ($column in 'Repo', 'After', 'Due')
         { $trackerGrid.Columns[$column].Visible = -not $isArchive }
 
     $trackerGrid.Columns['Outcome'].Visible = $isArchive
@@ -1260,7 +1276,7 @@ $grid.Add_KeyDown({
 
 $trackerGrid = New-Grid
 
-foreach ($column in @(('Title', 70, 'Title'), ('Repo', 0, 'Repo'), ('Latest', 0, 'Latest'), ('InState', 0, 'In state'), ('After', 24, 'Depends on'), ('Outcome', 50, 'Outcome')))
+foreach ($column in @(('Title', 70, 'Title'), ('Repo', 0, 'Repo'), ('Since', 0, 'Since'), ('After', 0, 'Can start'), ('Due', 0, 'Due'), ('Outcome', 50, 'Outcome')))
 {
     $trackerGrid.Columns.Add($column[0], $column[2]) | Out-Null
     $trackerGrid.Columns[$column[0]].SortMode = 'NotSortable'
@@ -1286,7 +1302,7 @@ $trackerGrid.Add_ColumnHeaderMouseClick({
     else
     {
         $script:archiveSortColumn = $columnName
-        $script:archiveSortDescending = $columnName -eq 'Latest'
+        $script:archiveSortDescending = $columnName -eq 'Since'
     }
 
     Show-TrackerItems

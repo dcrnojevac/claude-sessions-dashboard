@@ -146,7 +146,9 @@ goes. It is optional and separate from the install: the installer never creates 
 
 **Tracker** in the window shows:
 
-- the items by section, each with its repo, its latest stamp and how long it has been in that state;
+- the items by section, each with its repo, since when it has been in its state and for how long (hover for the stamp itself),
+  whether it can start (green once everything in its `After:` is archived, orange while it waits on an outside event, red for an
+  unknown id; hover for what it waits on), and its due date, orange within 3 days and red on the day or past it;
 - **Filter** above the list: only the lines that hold every word typed, in the open items and the archive alike. Ctrl+F goes to
   it, and Esc clears it;
 - the selected item's title, its line and its details file. **Open details**, double-click or Enter opens the file in your
@@ -187,7 +189,7 @@ folder's full path, and use that path in the instructions too.
 Each item is one Markdown bullet:
 
 ```text
-- [<id>] <title and short description>. Repo: <repo>. After: [<other-id>]. Trigger: <when to pick it up>. → items/<id>.md. Added <YYYY-MM-DD>, started <YYYY-MM-DD>.
+- [<id>] <title and short description>. Repo: <repo>. After: [<other-id>]. Trigger: <when to pick it up>. Due: <YYYY-MM-DD>. → items/<id>.md. Added <YYYY-MM-DD>, started <YYYY-MM-DD>.
 ```
 
 - `[<id>]` is kebab-case and always comes first.
@@ -195,7 +197,8 @@ Each item is one Markdown bullet:
 - `After:` is a hard blocker: the item cannot start before it finishes. It names an id, several (`After: [a], [b]`), an outside
   event (`After: the vendor ships 5.0`), and can repeat.
 - `Trigger:` says when to pick the item up. A Planned item has `After:`, `Trigger:` or both.
-- `→ items/<id>.md` links the details file. `Repo:`, `After:`, `Trigger:` and the link are each optional.
+- `Due:` is a real date the item must be done by, as `YYYY-MM-DD`.
+- `→ items/<id>.md` links the details file. `Repo:`, `After:`, `Trigger:`, `Due:` and the link are each optional.
 - The line ends with its history, one dated stamp per event, oldest first: `Added`, then `started`, `planned`, `moved to Low Priority`,
   and so on. A move between sections adds a stamp and never rewrites an earlier one.
 - In `archive.md` the line keeps its stamps, adds `archived <YYYY-MM-DD>`, and ends with a few words on the outcome.
@@ -230,7 +233,7 @@ Copy this into `~/.claude/CLAUDE.md`:
 ```markdown
 ## Tracker
 
-- **`~/.claude/tracker/TRACKER.md` is my to-do list across all my work, in and outside repos**: read it at the start of a session. When something is started, planned or finished during a session, update it in the same turn. Each item is one line in In Progress, Next, Planned or Low Priority, starting with a kebab-case `[id]`; `Repo: <name>` names the repo the work is in, by its folder name, and is left out for work outside a repo. Its details, if it needs any, go in `items/<id>.md` beside it, linked from the line as `→ items/<id>.md`, never in the index. `After: [id]` or `After: <event>` names what must finish before the item can start, and only that; `Trigger:` says when to pick it up. A Planned item always has one or the other. When archiving an item, tell me which items it unblocked, without moving them. Every line ends with its dated history, one stamp per event, oldest first (`Added 2026-01-05, started 2026-01-08, planned 2026-01-09.`); a move between sections adds a stamp and never rewrites an earlier one. A finished item moves to `archive.md` as one line keeping its stamps plus `archived <date>` and a few words on the outcome, and its details file is deleted. Low Priority holds things worth doing but not now: leave them out when I ask what's next unless nothing else is left.
+- **`~/.claude/tracker/TRACKER.md` is my to-do list across all my work, in and outside repos**: read it at the start of a session. When something is started, planned or finished during a session, update it in the same turn. Each item is one line in In Progress, Next, Planned or Low Priority, starting with a kebab-case `[id]`; `Repo: <name>` names the repo the work is in, by its folder name, and is left out for work outside a repo. Its details, if it needs any, go in `items/<id>.md` beside it, linked from the line as `→ items/<id>.md`, never in the index. `After: [id]` or `After: <event>` names what must finish before the item can start, and only that; `Trigger:` says when to pick it up. A Planned item always has one or the other. `Due: <date>` is set only for a real date (a client meeting, a cutover window, an expiring credential), never an invented one; when I ask what's next, an item due soon comes first, from any section. When archiving an item, tell me which items it unblocked, without moving them. Every line ends with its dated history, one stamp per event, oldest first (`Added 2026-01-05, started 2026-01-08, planned 2026-01-09.`); a move between sections adds a stamp and never rewrites an earlier one. A finished item moves to `archive.md` as one line keeping its stamps plus `archived <date>` and a few words on the outcome, and its details file is deleted. Low Priority holds things worth doing but not now: leave them out when I ask what's next unless nothing else is left.
 ```
 
 ## Settings and data

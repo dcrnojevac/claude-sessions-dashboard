@@ -72,6 +72,24 @@ Describe 'ConvertFrom-ClaudeTrackerLine' {
         (ConvertFrom-ClaudeTrackerLine $baselineLine 'Planned').repo | Should -BeNullOrEmpty
     }
 
+    It 'reads a due date without taking it into the clause before it' {
+        $line = '- [rate-limits] Rate limits on the public API. Repo: public-api. Due: 2026-01-20. → items/rate-limits.md. Added 2026-01-05.'
+        $item = ConvertFrom-ClaudeTrackerLine $line 'Next'
+
+        $item.due | Should -Be '2026-01-20'
+        $item.dueDate | Should -Be ([datetime]'2026-01-20')
+        $item.repo | Should -Be 'public-api'
+        $item.detailsLink | Should -Be 'items/rate-limits.md'
+        $item.latestStamp.text | Should -Be 'Added 2026-01-05'
+    }
+
+    It 'keeps a due that is not a date, without a date' {
+        $item = ConvertFrom-ClaudeTrackerLine '- [rate-limits] Rate limits. Due: early next week. Added 2026-01-05.' 'Next'
+
+        $item.due | Should -Be 'early next week'
+        $item.dueDate | Should -BeNullOrEmpty
+    }
+
     It 'keeps keywords inside `code` and arrows outside items/ in the title' {
         $line = '- [graph-view] Draw `After:` links as a tree, A -> B. Added 2026-01-05.'
         $item = ConvertFrom-ClaudeTrackerLine $line 'Next'
@@ -287,6 +305,18 @@ Describe 'Format-ClaudeDaysSince' {
         @{ Days = 12; Expected = '12 days' }
     ) {
         Format-ClaudeDaysSince (Get-Date).Date.AddDays(-$Days) | Should -Be $Expected
+    }
+}
+
+Describe 'Format-ClaudeDaysUntil' {
+    It 'says <Expected> for a date <Days> days away' -ForEach @(
+        @{ Days = 0; Expected = 'today' }
+        @{ Days = 1; Expected = 'in 1 day' }
+        @{ Days = 4; Expected = 'in 4 days' }
+        @{ Days = -1; Expected = '1 day overdue' }
+        @{ Days = -3; Expected = '3 days overdue' }
+    ) {
+        Format-ClaudeDaysUntil (Get-Date).Date.AddDays($Days) | Should -Be $Expected
     }
 }
 
